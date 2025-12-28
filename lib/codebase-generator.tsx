@@ -678,7 +678,7 @@ function generateAppTsx(parsedContent: ParsedContent): string {
   const hasCrawledContent = !!(parsedContent.bodyContent || (parsedContent as any).htmlContent)
 
   if (hasCrawledContent) {
-    return `import React, { useEffect } from 'react'
+    return `import { useEffect } from 'react'
 import Home from './pages/Home'
 
 function App() {
@@ -708,8 +708,7 @@ function App() {
 export default App`
   }
 
-  return `import React from 'react'
-import { BrowserRouter as Router, Routes, Route } from 'react-router-dom'
+  return `import { BrowserRouter as Router, Routes, Route } from 'react-router-dom'
 import Home from './pages/Home'
 // Layout is omitted for crawled content but kept for generated content
 import Layout from './components/layout/Layout'
@@ -3893,9 +3892,7 @@ function generateHomePageFromContent(parsedContent: ParsedContent): string {
       .replace(/`/g, '\\`')
       .replace(/\$\{/g, '\\${')
 
-    return `import React from 'react'
-
-export default function Home() {
+    return `export default function Home() {
   return (
     <div 
       className="site-content"
