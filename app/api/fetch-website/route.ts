@@ -1,0 +1,538 @@
+import { type NextRequest, NextResponse } from "next/server"
+import * as cheerio from "cheerio"
+
+// ============ INTERFACES ============
+
+interface CrawlResult {
+  html: string
+  cssFiles: { url: string; content: string }[]
+  jsFiles: { url: string; content: string }[]
+  inlineStyles: string[]
+  inlineScripts: string[]
+}
+
+interface ParsedContent {
+  title: string
+  description: string
+  favicon: string | null
+  navItems: NavItem[]
+  hero: HeroSection | null
+  sections: ContentSection[]
+  footerLinks: FooterLink[]
+  images: ExtractedImage[]
+  formElements: FormElement[]
+  colors: ColorPalette
+  metadata: PageMetadata
+  bodyContent: string  // The actual body HTML content
+  headContent: string  // The head content (meta tags, etc.)
+  crawledAssets: CrawlResult  // All fetched assets
+}
+
+interface NavItem {
+  text: string
+  href: string
+  ariaLabel?: string
+}
+
+interface HeroSection {
+  title: string
+  subtitle: string
+  ctaText: string
+  ctaLink: string
+  backgroundImage: string | null
+}
+
+interface ContentSection {
+  id: string
+  type: "text" | "cards" | "features" | "testimonials" | "faq" | "contact" | "pricing" | "content"
+  heading: string
+  subheading: string
+  content: string
+  items?: SectionItem[]
+  columns?: number
+}
+
+interface SectionItem {
+  title: string
+  description: string
+  icon?: string
+  image?: string
+  link?: string
+}
+
+interface FooterLink {
+  section: string
+  links: { text: string; href: string }[]
+}
+
+interface ExtractedImage {
+  src: string
+  alt: string
+  section: string
+}
+
+interface FormElement {
+  type: string
+  placeholder?: string
+  required: boolean
+}
+
+interface ColorPalette {
+  primary: string
+  secondary: string
+  accent: string
+  background: string
+  text: string
+}
+
+interface PageMetadata {
+  language: string
+  charset: string
+  keywords: string[]
+  ogImage?: string
+  twitterCard?: string
+}
+
+// ============ MAIN HANDLER ============
+
+export async function POST(request: NextRequest) {
+  try {
+    const { domain } = await request.json()
+
+    if (!domain) {
+      return NextResponse.json({ error: "Domain is required" }, { status: 400 })
+    }
+
+    const url = `https://${domain}`
+
+    try {
+      // Step 1: Fetch the main HTML page
+      const response = await fetch(url, {
+        headers: {
+          "User-Agent":
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+          Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        },
+        // @ts-ignore - Next.js specific
+        next: { revalidate: 0 },
+      })
+
+      if (!response.ok) {
+        return NextResponse.json({
+          success: true,
+          domain,
+          parsedContent: generateMockContent(domain),
+          accessible: false,
+        })
+      }
+
+      const html = await response.text()
+      
+      // Step 2: Crawl and fetch all CSS/JS assets
+      const crawledAssets = await crawlAndFetchAssets(html, domain)
+      
+      // Step 3: Parse the website content
+      const parsedContent = parseWebsiteContent(html, domain, crawledAssets)
+
+      return NextResponse.json({
+        success: true,
+        domain,
+        rawHtml: html,
+        parsedContent,
+        accessible: true,
+      })
+    } catch (fetchError) {
+      console.error("Fetch error:", fetchError)
+      return NextResponse.json({
+        success: true,
+        domain,
+        parsedContent: generateMockContent(domain),
+        accessible: false,
+      })
+    }
+  } catch (error) {
+    return NextResponse.json(
+      { error: error instanceof Error ? error.message : "Failed to process request" },
+      { status: 500 },
+    )
+  }
+}
+
+// ============ CRAWLING FUNCTIONS ============
+
+/**
+ * Crawl and fetch all CSS and JS assets from the page
+ */
+async function crawlAndFetchAssets(html: string, domain: string): Promise<CrawlResult> {
+  const $ = cheerio.load(html)
+  const baseUrl = `https://${domain}`
+  
+  const cssUrls = new Set<string>()
+  const jsUrls = new Set<string>()
+  const inlineStyles: string[] = []
+  const inlineScripts: string[] = []
+  
+  // Collect CSS file URLs
+  $('link[rel="stylesheet"]').each((_, el) => {
+    const href = $(el).attr('href')
+    if (href) {
+      const fullUrl = normalizeUrl(href, domain)
+      // Only fetch from same domain or relative URLs
+      if (fullUrl.includes(domain) || href.startsWith('/') || !href.startsWith('http')) {
+        cssUrls.add(fullUrl)
+      }
+    }
+  })
+  
+  // Collect inline styles
+  $('style').each((_, el) => {
+    const content = $(el).html()
+    if (content && content.trim()) {
+      inlineStyles.push(content)
+    }
+  })
+  
+  // Collect JS file URLs (skip external analytics/chat scripts)
+  $('script[src]').each((_, el) => {
+    const src = $(el).attr('src')
+    if (src) {
+      // Skip external services
+      const skipPatterns = ['googletagmanager', 'google-analytics', 'crisp', 'facebook', 'twitter', 'linkedin', 'hotjar', 'clarity']
+      const shouldSkip = skipPatterns.some(pattern => src.toLowerCase().includes(pattern))
+      
+      if (!shouldSkip) {
+        const fullUrl = normalizeUrl(src, domain)
+        if (fullUrl.includes(domain) || src.startsWith('/') || !src.startsWith('http')) {
+          jsUrls.add(fullUrl)
+        }
+      }
+    }
+  })
+  
+  // Collect inline scripts (non-analytics)
+  $('script:not([src])').each((_, el) => {
+    const content = $(el).html()
+    if (content && content.trim()) {
+      // Skip if it looks like analytics
+      const skipPatterns = ['gtag', 'dataLayer', 'fbq', '_gaq', 'analytics', 'crisp']
+      const shouldSkip = skipPatterns.some(pattern => content.includes(pattern))
+      if (!shouldSkip) {
+        inlineScripts.push(content)
+      }
+    }
+  })
+  
+  // Fetch all CSS files
+  const cssFiles = await fetchAllFiles(Array.from(cssUrls))
+  
+  // Fetch all JS files
+  const jsFiles = await fetchAllFiles(Array.from(jsUrls))
+  
+  return {
+    html,
+    cssFiles,
+    jsFiles,
+    inlineStyles,
+    inlineScripts,
+  }
+}
+
+/**
+ * Fetch multiple files in parallel with error handling
+ */
+async function fetchAllFiles(urls: string[]): Promise<{ url: string; content: string }[]> {
+  const results = await Promise.allSettled(
+    urls.map(async (url) => {
+      try {
+        const response = await fetch(url, {
+          headers: {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+          },
+        })
+        if (response.ok) {
+          const content = await response.text()
+          return { url, content }
+        }
+        return { url, content: "" }
+      } catch {
+        return { url, content: "" }
+      }
+    })
+  )
+  
+  return results
+    .filter((r): r is PromiseFulfilledResult<{ url: string; content: string }> => r.status === "fulfilled")
+    .map(r => r.value)
+    .filter(r => r.content.length > 0)
+}
+
+// ============ PARSING FUNCTIONS ============
+
+function parseWebsiteContent(html: string, domain: string, crawledAssets: CrawlResult): ParsedContent {
+  const $ = cheerio.load(html)
+
+  // Extract basic metadata
+  const title = $("title").text() || domain
+  const description = $('meta[name="description"]').attr("content") || ""
+  const favicon = $('link[rel="icon"]').attr("href") || $('link[rel="shortcut icon"]').attr("href") || null
+  const keywords = $('meta[name="keywords"]').attr("content")?.split(",").map(k => k.trim()) || []
+  const ogImage = $('meta[property="og:image"]').attr("content") || undefined
+  const twitterCard = $('meta[name="twitter:card"]').attr("content") || undefined
+  const charset = $('meta[charset]').attr("charset") || "utf-8"
+  const language = $("html").attr("lang") || "en"
+
+  // Extract head content (for meta tags, etc.)
+  const headContent = $('head').html() || ''
+  
+  // Extract body content - this is the main content we need
+  const bodyContent = $('body').html() || ''
+
+  // Extract navigation
+  const navItems: NavItem[] = []
+  $("nav a, header a, [role='navigation'] a").each((_, el) => {
+    const text = $(el).text().trim()
+    const href = $(el).attr("href") || "#"
+    if (text && text.length < 100 && !text.includes("\n")) {
+      navItems.push({ text, href: normalizeUrl(href, domain), ariaLabel: $(el).attr("aria-label") })
+    }
+  })
+
+  // Extract hero section
+  let hero: HeroSection | null = null
+  const heroEl = $("[class*='hero'], [class*='banner'], header, .jumbotron").first()
+  if (heroEl.length) {
+    const h1 = heroEl.find("h1").first().text().trim()
+    const subtitle = heroEl.find("h2, p").first().text().trim()
+    const ctaBtn = heroEl.find("a, button").first()
+    hero = {
+      title: h1 || title,
+      subtitle: subtitle || description,
+      ctaText: ctaBtn.text().trim() || "Learn More",
+      ctaLink: ctaBtn.attr("href") || "#",
+      backgroundImage: heroEl.css("background-image") || null,
+    }
+  }
+
+  // Extract images with full URLs
+  const images: ExtractedImage[] = []
+  $("img").each((_, el) => {
+    const src = $(el).attr("src") || ""
+    const alt = $(el).attr("alt") || "Image"
+    if (src && !src.includes("data:")) {
+      images.push({ 
+        src: normalizeUrl(src, domain), 
+        alt, 
+        section: $(el).closest("section, div[class*='section']").attr("class") || "general" 
+      })
+    }
+  })
+
+  // Extract form elements
+  const formElements: FormElement[] = []
+  $("input, textarea, select").each((_, el) => {
+    const type = $(el).attr("type") || "text"
+    formElements.push({
+      type,
+      placeholder: $(el).attr("placeholder"),
+      required: $(el).attr("required") !== undefined,
+    })
+  })
+
+  // Extract footer links
+  const footerLinks: FooterLink[] = []
+  $("footer").each((_, footer) => {
+    $(footer)
+      .find("div, section, ul")
+      .each((_, section) => {
+        const heading = $(section).find("h3, h4, strong").first().text().trim()
+        if (heading) {
+          const links: { text: string; href: string }[] = []
+          $(section)
+            .find("a")
+            .each((_, link) => {
+              const text = $(link).text().trim()
+              const href = $(link).attr("href") || "#"
+              if (text) links.push({ text, href: normalizeUrl(href, domain) })
+            })
+          if (links.length > 0) {
+            footerLinks.push({ section: heading, links })
+          }
+        }
+      })
+  })
+
+  // Extract color palette from CSS
+  const colorPalette = extractColorsFromAssets(crawledAssets)
+
+  // Extract sections
+  const sections: ContentSection[] = []
+  const sectionElements = $("section, [class*='section'], [class*='container'] > div, main > div, article")
+  
+  let sectionCount = 0
+  sectionElements.each((index, el) => {
+    const heading = $(el).find("h2, h3, h1").first().text().trim()
+    const text = $(el).text().trim()
+    
+    if (!text || text.length < 20) return
+    
+    sectionCount++
+    const finalHeading = heading || `Section ${sectionCount}`
+    
+    const section: ContentSection = {
+      id: `section-${index}`,
+      type: detectSectionType($(el)),
+      heading: finalHeading,
+      subheading: $(el).find("h3, h4, p").eq(1).text().trim(),
+      content: $(el).find("p").first().text().trim() || text.substring(0, 200),
+    }
+
+    const items: SectionItem[] = []
+    $(el)
+      .find("[class*='card'], [class*='item'], [class*='feature'], [class*='service'], li, [class*='box']")
+      .each((_, item) => {
+        const itemTitle = $(item).find("h3, h4, .title, strong, span[class*='title']").first().text().trim()
+        if (itemTitle && itemTitle.length > 2) {
+          items.push({
+            title: itemTitle,
+            description: $(item).find("p").first().text().trim(),
+            image: $(item).find("img").attr("src"),
+            link: $(item).find("a").attr("href"),
+          })
+        }
+      })
+
+    if (items.length > 0) {
+      section.items = items
+      section.columns = detectColumns($(el))
+    }
+
+    sections.push(section)
+  })
+
+  return {
+    title,
+    description,
+    favicon: favicon ? normalizeUrl(favicon, domain) : null,
+    navItems: [...new Set(navItems.map(n => JSON.stringify(n)))].map(n => JSON.parse(n)).slice(0, 10),
+    hero,
+    sections,
+    footerLinks,
+    images: images.slice(0, 50),
+    formElements,
+    colors: colorPalette,
+    metadata: {
+      language,
+      charset,
+      keywords,
+      ogImage,
+      twitterCard,
+    },
+    bodyContent,
+    headContent,
+    crawledAssets,
+  }
+}
+
+// ============ HELPER FUNCTIONS ============
+
+function normalizeUrl(url: string, domain: string): string {
+  if (!url) return ""
+  if (url.startsWith("data:")) return url
+  if (url.startsWith("http://") || url.startsWith("https://")) return url
+  if (url.startsWith("//")) return "https:" + url
+  if (url.startsWith("/")) return `https://${domain}${url}`
+  return `https://${domain}/${url}`
+}
+
+function extractColorsFromAssets(crawledAssets: CrawlResult): ColorPalette {
+  const colors = { 
+    primary: "#3b82f6", 
+    secondary: "#1e40af", 
+    accent: "#60a5fa", 
+    background: "#ffffff", 
+    text: "#1f2937" 
+  }
+  
+  // Combine all CSS content
+  const allCss = [
+    ...crawledAssets.cssFiles.map(f => f.content),
+    ...crawledAssets.inlineStyles
+  ].join("\n")
+  
+  // Try to extract primary color from CSS variables or common patterns
+  const primaryMatch = allCss.match(/--primary[^:]*:\s*([#\w(),.]+)/i)
+  if (primaryMatch) colors.primary = primaryMatch[1].trim()
+  
+  const secondaryMatch = allCss.match(/--secondary[^:]*:\s*([#\w(),.]+)/i)
+  if (secondaryMatch) colors.secondary = secondaryMatch[1].trim()
+  
+  const accentMatch = allCss.match(/--accent[^:]*:\s*([#\w(),.]+)/i)
+  if (accentMatch) colors.accent = accentMatch[1].trim()
+  
+  return colors
+}
+
+function detectSectionType(el: cheerio.Cheerio<cheerio.Element>): ContentSection["type"] {
+  const html = el.html() || ""
+  if (html.includes("testimonial") || html.includes("quote")) return "testimonials"
+  if (html.includes("pricing") || html.includes("plan")) return "pricing"
+  if (html.includes("faq") || html.includes("question")) return "faq"
+  if (html.includes("contact") || html.includes("form")) return "contact"
+  if (el.find("[class*='card']").length > 0) return "cards"
+  return "features"
+}
+
+function detectColumns(el: cheerio.Cheerio<cheerio.Element>): number {
+  const classList = el.attr("class") || ""
+  if (classList.includes("4")) return 4
+  if (classList.includes("3")) return 3
+  if (classList.includes("2")) return 2
+  return 1
+}
+
+function generateMockContent(domain: string): ParsedContent {
+  const titleCase = domain.split(".")[0].charAt(0).toUpperCase() + domain.split(".")[0].slice(1)
+  return {
+    title: titleCase,
+    description: `Learn about ${titleCase}`,
+    favicon: null,
+    navItems: [
+      { text: "Home", href: "/" },
+      { text: "About", href: "/about" },
+      { text: "Services", href: "/services" },
+      { text: "Contact", href: "/contact" },
+    ],
+    hero: {
+      title: `Welcome to ${titleCase}`,
+      subtitle: "Building amazing digital experiences",
+      ctaText: "Get Started",
+      ctaLink: "/contact",
+      backgroundImage: null,
+    },
+    sections: [
+      {
+        id: "section-1",
+        type: "features",
+        heading: "Why Choose Us",
+        subheading: "We deliver excellence",
+        content: "Our services are designed to meet your needs",
+        items: [
+          { title: "Fast", description: "Lightning quick performance" },
+          { title: "Secure", description: "Enterprise-grade security" },
+          { title: "Reliable", description: "99.9% uptime guarantee" },
+        ],
+        columns: 3,
+      },
+    ],
+    footerLinks: [
+      { section: "Company", links: [{ text: "About", href: "/about" }, { text: "Contact", href: "/contact" }] },
+    ],
+    images: [],
+    formElements: [{ type: "email", placeholder: "your@email.com", required: true }],
+    colors: { primary: "#3b82f6", secondary: "#1e40af", accent: "#60a5fa", background: "#ffffff", text: "#1f2937" },
+    metadata: { language: "en", charset: "utf-8", keywords: [], ogImage: undefined, twitterCard: undefined },
+    bodyContent: "",
+    headContent: "",
+    crawledAssets: { html: "", cssFiles: [], jsFiles: [], inlineStyles: [], inlineScripts: [] },
+  }
+}
