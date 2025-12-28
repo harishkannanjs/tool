@@ -140,6 +140,44 @@ Suggest reusable components.`;
 }
 
 /**
+ * Convert raw HTML/CSS into a modular React component using AI
+ */
+export async function convertHtmlToReactComponent(
+  htmlSnippet: string,
+  cssContext: string,
+  componentName: string
+): Promise<{ code: string; dependencies: string[]; props: any[] } | null> {
+  if (!isGeminiEnabled()) return null;
+
+  try {
+    const apiKey = getGeminiApiKey();
+    if (!apiKey) return null;
+
+    const { COMPONENT_CONVERSION_PROMPT } = await import("./prompts");
+
+    const userPrompt = `html_snippet: "${htmlSnippet.substring(0, 10000)}"
+css_context: "${cssContext.substring(0, 5000)}"
+component_name: "${componentName}"`;
+
+    const response = await callGeminiAPI(
+      apiKey,
+      COMPONENT_CONVERSION_PROMPT,
+      userPrompt
+    );
+
+    const result = parseGeminiResponse(response);
+    return {
+      code: result.code,
+      dependencies: result.dependencies || [],
+      props: result.props || []
+    };
+  } catch (error) {
+    console.error("Component conversion error:", error);
+    return null;
+  }
+}
+
+/**
  * Validate component structure for consistency
  */
 export async function validateComponentStructure(
@@ -280,19 +318,19 @@ Description: ${parsedContent.description}
 
 Sections found:
 ${(parsedContent.sections || [])
-  .map(
-    (s: any, i: number) =>
-      `${i + 1}. ${s.heading || "Section " + (i + 1)}: ${s.content?.substring(0, 100) || "content"}`
-  )
-  .join("\n")}
+      .map(
+        (s: any, i: number) =>
+          `${i + 1}. ${s.heading || "Section " + (i + 1)}: ${s.content?.substring(0, 100) || "content"}`
+      )
+      .join("\n")}
 
 Navigation items:
 ${(parsedContent.navItems || []).map((n: any) => `- ${n.text} (${n.href})`).join("\n")}
 
 Footer links:
 ${(parsedContent.footerLinks || [])
-  .flatMap((f: any) => (f.links || []).map((l: any) => `- ${l.text}`))
-  .join("\n")}
+      .flatMap((f: any) => (f.links || []).map((l: any) => `- ${l.text}`))
+      .join("\n")}
 
 Suggest the optimal React component structure for this website.`;
 }

@@ -133,3 +133,26 @@ Output ONLY this JSON:
   "unusedComponents": ["component names not referenced"],
   "suggestions": ["string (optimization suggestions)"]
 }`;
+export const COMPONENT_CONVERSION_PROMPT = `You are an expert Frontend Engineer. Your task is to convert a raw HTML/CSS snippet from a crawled website into a high-quality, production-ready React component.
+
+Input:
+- html_snippet: "Raw HTML of the component"
+- css_context: "Relevant CSS rules and variables applied to this snippet"
+- component_name: "Suggested name for the component"
+
+Guidelines:
+1. Visual Fidelity: Maintain 100% visual accuracy. Use the provided CSS variables for colors, spacing, and typography.
+2. Structure: Break down complex HTML into logical sub-components if necessary.
+3. Props: Identify dynamic data and extract them into TypeScript props.
+4. Tailwind Integration (Optional): If the project uses Tailwind, map common styles to Tailwind classes where beneficial, but prioritize custom CSS/Variables for pixel-perfect matches.
+5. Interactive Logic: If you detect buttons, forms, or links, implement standard React patterns (onClick, onSubmit, Link from react-router-dom).
+6. Accessibility: Ensure semantic HTML and proper ARIA attributes.
+7. TypeScript: Use strict typing for all props.
+
+Output ONLY a JSON object:
+{
+  "code": "string (The complete React component code as a string)",
+  "dependencies": ["string (Import statements needed)"],
+  "props": [{ "name": "string", "type": "string", "description": "string" }],
+  "subComponents": ["string (names of internal components created)"]
+}`;

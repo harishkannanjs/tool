@@ -45,6 +45,7 @@ interface HeroSection {
   ctaText: string
   ctaLink: string
   backgroundImage: string | null
+  rawHtml?: string
 }
 
 interface ContentSection {
@@ -55,6 +56,7 @@ interface ContentSection {
   content: string
   items?: SectionItem[]
   columns?: number
+  rawHtml?: string
 }
 
 interface SectionItem {
@@ -112,32 +114,11 @@ export async function POST(request: NextRequest) {
     const url = `https://${domain}`
 
     try {
-      // Step 1: Fetch the main HTML page
-      const response = await fetch(url, {
-        headers: {
-          "User-Agent":
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-          Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        },
-        // @ts-ignore - Next.js specific
-        next: { revalidate: 0 },
-      })
+      // Step 1 & 2: Crawl and fetch everything in one pass using the new unified crawler
+      const crawledAssets = await crawlAndFetchAssets(domain)
+      const html = crawledAssets.html
 
-      if (!response.ok) {
-        return NextResponse.json({
-          success: true,
-          domain,
-          parsedContent: generateMockContent(domain),
-          accessible: false,
-        })
-      }
-
-      const html = await response.text()
-
-      // Step 2: Crawl and fetch all CSS/JS assets
-      const crawledAssets = await crawlAndFetchAssets(html, domain)
-
-      // Step 3: Parse the website content
+      // Step 3: Parse the website content (now uses the HTML returned by the crawler)
       const parsedContent = parseWebsiteContent(html, domain, crawledAssets)
 
       return NextResponse.json({
@@ -170,44 +151,43 @@ export async function POST(request: NextRequest) {
  * Crawl and fetch all CSS and JS assets from the page
  * Uses Python BeautifulSoup4 as primary method for CSS extraction, Node.js as fallback
  */
-async function crawlAndFetchAssets(html: string, domain: string): Promise<CrawlResult> {
+async function crawlAndFetchAssets(domain: string): Promise<CrawlResult> {
   const url = `https://${domain}`
 
-  // Try Python BeautifulSoup4 first (as requested)
+  // Try Python crawler first (consolidated and highly accurate)
   try {
-    const pythonScriptPath = path.join(process.cwd(), "lib", "python", "fetch_css.py")
-    // Use python or python3 depending on system
+    const pythonScriptPath = path.join(process.cwd(), "lib", "python", "crawler.py")
     const pythonCmd = process.platform === "win32" ? "python" : "python3"
 
-    console.log(`Executing Python CSS fetcher for ${url}...`)
+    console.log(`Executing Python Crawler for ${url}...`)
     const output = execSync(`${pythonCmd} "${pythonScriptPath}" "${url}"`, {
       encoding: "utf-8",
-      maxBuffer: 10 * 1024 * 1024 // 10MB buffer
+      maxBuffer: 20 * 1024 * 1024 // 20MB buffer for large sites
     })
 
     const result = JSON.parse(output)
 
     if (result && !result.error) {
-      console.log("Python CSS fetcher success")
-
-      // Still need to fetch JS files using Node (we only moved CSS to Python for now)
-      const jsUrls = extractJsUrls(html, domain)
-      const jsFiles = await fetchAllFiles(jsUrls)
+      console.log("Python Crawler success")
 
       return {
-        html,
+        html: result.html,
         cssFiles: result.css_files || [],
-        jsFiles: jsFiles,
+        jsFiles: result.js_files || [],
         inlineStyles: result.inline_styles || [],
-        inlineScripts: extractInlineScripts(html),
+        inlineScripts: result.inline_scripts || [],
         rootVariables: result.root_variables || {}
       }
     } else if (result.error) {
-      console.warn("Python CSS fetcher error:", result.error)
+      console.warn("Python Crawler reported error:", result.error)
     }
   } catch (pyError) {
-    console.warn("Python fetcher failed or not available, falling back to Node.js:", pyError instanceof Error ? pyError.message : String(pyError))
+    console.warn("Python crawler failed, falling back to basic Node.js fetch:", pyError instanceof Error ? pyError.message : String(pyError))
   }
+
+  // Basic fallback fetching if Python fails
+  const response = await fetch(url)
+  const html = await response.text()
 
   // Fallback to Node.js implementation
   const $ = cheerio.load(html)
@@ -413,7 +393,7 @@ function parseWebsiteContent(html: string, domain: string, crawledAssets: CrawlR
 
   // Extract navigation
   const navItems: NavItem[] = []
-  $("nav a, header a, [role='navigation'] a").each((_, el) => {
+  $("header, nav").first().find("a").each((_: any, el: any) => {
     const text = $(el).text().trim()
     const href = $(el).attr("href") || "#"
     if (text && text.length < 100 && !text.includes("\n")) {
@@ -508,12 +488,13 @@ function parseWebsiteContent(html: string, domain: string, crawledAssets: CrawlR
       heading: finalHeading,
       subheading: $(el).find("h3, h4, p").eq(1).text().trim(),
       content: $(el).find("p").first().text().trim() || text.substring(0, 200),
+      rawHtml: $(el).html() || "",
     }
 
     const items: SectionItem[] = []
     $(el)
       .find("[class*='card'], [class*='item'], [class*='feature'], [class*='service'], li, [class*='box']")
-      .each((_, item) => {
+      .each((_: any, item: any) => {
         const itemTitle = $(item).find("h3, h4, .title, strong, span[class*='title']").first().text().trim()
         if (itemTitle && itemTitle.length > 2) {
           items.push({
@@ -554,8 +535,8 @@ function parseWebsiteContent(html: string, domain: string, crawledAssets: CrawlR
     },
     bodyContent,
     headContent,
-    htmlAttributes: $("html").attr() || {},
-    bodyAttributes: $("body").attr() || {},
+    htmlAttributes: (crawledAssets as any).metadata?.html_attributes || {},
+    bodyAttributes: (crawledAssets as any).metadata?.body_attributes || {},
     crawledAssets,
   }
 }

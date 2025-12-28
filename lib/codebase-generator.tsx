@@ -4,6 +4,7 @@ import JSZip from "jszip"
 import {
   analyzeWebsiteStructure,
   getDefaultStructureSuggestions,
+  convertHtmlToReactComponent,
   type AIAnalysisResult,
 } from "./ai/analyze-website"
 import { validateImportsEnhanced, type GeneratedFile } from "./ai/validate-imports"
