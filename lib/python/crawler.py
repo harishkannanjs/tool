@@ -20,8 +20,8 @@ class WebsiteCrawler:
         self.js_files = []
         self.inline_styles = []
         self.inline_scripts = []
-        self.assets = [] # fonts, images
         self.processed_urls = set()
+        self.max_css_depth = 3
 
     def rewrite_url(self, url, base_url):
         if not url or url.startswith(('data:', 'http', 'var(', '#')):
@@ -37,21 +37,37 @@ class WebsiteCrawler:
         else:
             return urljoin(file_base_path, url)
 
-    def rewrite_css_urls(self, css_content, css_file_url):
-        def replace_url(match):
-            url_path = match.group(1).strip("'\"")
-            abs_url = self.rewrite_url(url_path, css_file_url)
-            return f"url('{abs_url}')"
-
-        content = re.sub(r'url\((?!\s*["\']?data:)([^)]+)\)', replace_url, css_content)
+    def fetch_css_recursive(self, css_url, depth=0):
+        if depth > self.max_css_depth or css_url in self.processed_urls:
+            return ""
         
-        def replace_import(match):
-            import_path = match.group(1).strip("'\"")
-            abs_url = self.rewrite_url(import_path, css_file_url)
-            return f"@import '{abs_url}';"
+        self.processed_urls.add(css_url)
+        try:
+            res = self.session.get(css_url, timeout=10)
+            if res.status_code != 200:
+                return ""
+            
+            content = res.text
+            
+            # 1. Flatten @imports
+            def flatten_import(match):
+                import_path = match.group(1).strip("'\"")
+                abs_url = self.rewrite_url(import_path, css_url)
+                return self.fetch_css_recursive(abs_url, depth + 1)
 
-        content = re.sub(r'@import\s+["\']([^"\']+)["\'];?', replace_import, content)
-        return content
+            content = re.sub(r'@import\s+url\(?["\']?([^"\']+)["\']?\)?;?', flatten_import, content)
+            
+            # 2. Rewrite normal URLs (fonts, images)
+            def replace_url(match):
+                url_path = match.group(1).strip("'\"")
+                abs_url = self.rewrite_url(url_path, css_url)
+                return f"url('{abs_url}')"
+
+            content = re.sub(r'url\((?!\s*["\']?data:)([^)]+)\)', replace_url, content)
+            
+            return content
+        except:
+            return ""
 
     def fetch_page(self):
         try:
@@ -70,20 +86,15 @@ class WebsiteCrawler:
 
         soup = BeautifulSoup(html, 'html.parser')
         
-        # 1. External Stylesheets
+        # 1. External Stylesheets (with flattening)
         for link in soup.find_all('link', rel='stylesheet'):
             href = link.get('href')
             if not href: continue
             full_url = urljoin(self.target_url, href)
-            if full_url in self.processed_urls: continue
-            self.processed_urls.add(full_url)
             
-            try:
-                res = self.session.get(full_url, timeout=10)
-                if res.status_code == 200:
-                    content = self.rewrite_css_urls(res.text, full_url)
-                    self.css_files.append({"url": full_url, "content": content})
-            except: pass
+            content = self.fetch_css_recursive(full_url)
+            if content:
+                self.css_files.append({"url": full_url, "content": content})
 
         # 2. External Scripts
         for script in soup.find_all('script', src=True):
@@ -101,7 +112,13 @@ class WebsiteCrawler:
         # 3. Inline Styles
         for style in soup.find_all('style'):
             if style.string:
-                content = self.rewrite_css_urls(style.string, self.target_url)
+                # Regular URL rewrite for inline (no depth needed as @import is rare in inline)
+                content = style.string
+                def replace_inline_url(match):
+                    url_path = match.group(1).strip("'\"")
+                    abs_url = self.rewrite_url(url_path, self.target_url)
+                    return f"url('{abs_url}')"
+                content = re.sub(r'url\((?!\s*["\']?data:)([^)]+)\)', replace_inline_url, content)
                 self.inline_styles.append(content)
 
         # 4. Inline Scripts
@@ -115,7 +132,7 @@ class WebsiteCrawler:
             "js_files": self.js_files,
             "inline_styles": self.inline_styles,
             "inline_scripts": self.inline_scripts,
-            "root_variables": self.extract_root_variables(),
+            "root_variables": self.extract_all_variables(),
             "metadata": {
                 "title": soup.title.string if soup.title else "",
                 "description": soup.find("meta", attrs={"name": "description"}).get("content", "") if soup.find("meta", attrs={"name": "description"}) else "",
@@ -124,14 +141,20 @@ class WebsiteCrawler:
             }
         }
 
-    def extract_root_variables(self):
+    def extract_all_variables(self):
+        """
+        Extract ALL variables from all CSS content, prioritizing those in :root
+        but catching others for fallback alignment accuracy.
+        """
         all_css = "\n".join([f['content'] for f in self.css_files] + self.inline_styles)
         variables = {}
-        root_blocks = re.findall(r':root\s*{([^}]*)}', all_css, re.IGNORECASE)
-        for block in root_blocks:
-            var_matches = re.findall(r'(--[^:]+):\s*([^;]+);', block)
-            for var, val in var_matches:
-                variables[var.strip()] = val.strip()
+        
+        # Capture all --var: value patterns
+        # We search globally first to ensure we don't miss anything that affects alignment
+        var_matches = re.findall(r'(--[^:]+):\s*([^;!]+)', all_css)
+        for var, val in var_matches:
+            variables[var.strip()] = val.strip()
+            
         return variables
 
 if __name__ == "__main__":

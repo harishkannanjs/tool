@@ -44,6 +44,8 @@ interface ParsedContent {
   htmlAttributes: Record<string, string>
   bodyAttributes: Record<string, string>
   crawledAssets: CrawlResult
+  headerHtml?: string
+  footerHtml?: string
 }
 
 export async function generateCodebase(
@@ -240,27 +242,60 @@ export { Loader } from './Loader'
   )
   await delay(20)
 
+  // Precompute CSS and colors for AI context
+  const siteCssContent = generateBundledSiteCss(parsedContent)
+  const colorsContext = JSON.stringify(parsedContent.colors)
+
   // ============ COMPONENTS - LAYOUT ============
-  addFile("src/components/layout/Header.tsx", generateHeaderComponentFromContent(parsedContent))
+  addFile("src/components/layout/Header.tsx", await generateHeaderComponentFromContent(parsedContent, siteCssContent, colorsContext))
   await delay(40)
 
-  addFile("src/components/layout/Footer.tsx", generateFooterComponentFromContent(parsedContent))
+  addFile("src/components/layout/Footer.tsx", await generateFooterComponentFromContent(parsedContent, siteCssContent, colorsContext))
   await delay(40)
 
   addFile("src/components/layout/Layout.tsx", generateLayoutComponent())
   await delay(40)
 
-  // ============ COMPONENTS - SECTIONS ============
   for (let i = 0; i < (parsedContent.sections || []).length; i++) {
     const section = parsedContent.sections[i]
-    const fileName = `src/components/sections/Section${i + 1}.tsx`
-    addFile(fileName, generateSectionComponentFromContent(section, i + 1, parsedContent.colors))
+    const sectionName = section.heading?.replace(/[^a-zA-Z0-9]/g, '') || `Section${i + 1}`
+    const fileName = `src/components/sections/${sectionName}.tsx`
+
+    let componentCode = ""
+
+    // Attempt AI conversion if rawHtml is available
+    if (section.rawHtml && section.rawHtml.length > 50) {
+      try {
+        onProgress?.([...fileNames, `Converting ${sectionName} with AI...`])
+        const aiComponent = await convertHtmlToReactComponent(
+          section.rawHtml,
+          siteCssContent.substring(0, 5000) + "\n" + colorsContext, // Provide some CSS context
+          sectionName
+        )
+
+        if (aiComponent && aiComponent.code) {
+          componentCode = aiComponent.code
+        }
+      } catch (error) {
+        console.warn(`AI conversion failed for ${sectionName}, falling back to template:`, error)
+      }
+    }
+
+    // Fallback to template if AI conversion failed or was skipped
+    if (!componentCode) {
+      componentCode = generateSectionComponentFromContent(section, i + 1, parsedContent.colors)
+    }
+
+    addFile(fileName, componentCode)
     await delay(40)
   }
 
   // Generate sections index for easier imports
   const sectionExports = (parsedContent.sections || [])
-    .map((_, i) => `export { Section${i + 1} } from './Section${i + 1}'`)
+    .map((s, i) => {
+      const name = s.heading?.replace(/[^a-zA-Z0-9]/g, '') || `Section${i + 1}`
+      return `export { ${name} } from './${name}'`
+    })
     .join('\n')
 
   addFile(
@@ -3591,7 +3626,23 @@ describe('useAuth', () => {
 
 // ============ DYNAMIC SECTION GENERATORS ============
 
-function generateHeaderComponentFromContent(parsedContent: ParsedContent): string {
+async function generateHeaderComponentFromContent(parsedContent: ParsedContent, siteCss: string, colors: string): Promise<string> {
+  // Attempt AI conversion if headerHtml is available
+  if (parsedContent.headerHtml && parsedContent.headerHtml.length > 50) {
+    try {
+      const aiComponent = await convertHtmlToReactComponent(
+        parsedContent.headerHtml,
+        siteCss.substring(0, 5000) + "\n" + colors,
+        "Header"
+      )
+      if (aiComponent && aiComponent.code) {
+        return aiComponent.code
+      }
+    } catch (error) {
+      console.warn("AI Header conversion failed, fallback to template:", error)
+    }
+  }
+
   const navItems = parsedContent.navItems || []
   const navItemsCode = navItems
     .map(
@@ -3622,10 +3673,10 @@ export function Header() {
       <div className="container flex h-16 items-center justify-between">
         <div className="flex items-center gap-8">
           <Link to={ROUTES.HOME} className="text-xl font-bold text-gray-900">
-            ${parsedContent.title || 'Site'}
+            \${parsedContent.title || 'Site'}
           </Link>
           <nav className="hidden md:flex items-center gap-6">
-            ${navItemsCode || '<NavLink to={ROUTES.HOME} className={navLinkClass}>Home</NavLink>'}
+            \${navItemsCode || '<NavLink to={ROUTES.HOME} className={navLinkClass}>Home</NavLink>'}
           </nav>
         </div>
         <div className="flex items-center gap-4">
@@ -3656,7 +3707,23 @@ export function Header() {
 `
 }
 
-function generateFooterComponentFromContent(parsedContent: ParsedContent): string {
+async function generateFooterComponentFromContent(parsedContent: ParsedContent, siteCss: string, colors: string): Promise<string> {
+  // Attempt AI conversion if footerHtml is available
+  if (parsedContent.footerHtml && parsedContent.footerHtml.length > 50) {
+    try {
+      const aiComponent = await convertHtmlToReactComponent(
+        parsedContent.footerHtml,
+        siteCss.substring(0, 5000) + "\n" + colors,
+        "Footer"
+      )
+      if (aiComponent && aiComponent.code) {
+        return aiComponent.code
+      }
+    } catch (error) {
+      console.warn("AI Footer conversion failed, fallback to template:", error)
+    }
+  }
+
   const footerLinks = parsedContent.footerLinks || []
 
   const sectionsCode = footerLinks
@@ -3684,22 +3751,22 @@ function generateFooterComponentFromContent(parsedContent: ParsedContent): strin
       <div className="container py-12">
         <div className="grid grid-cols-1 gap-8 md:grid-cols-4">
           <div>
-            <h3 className="text-lg font-semibold text-gray-900">${parsedContent.title || 'Site'}</h3>
+            <h3 className="text-lg font-semibold text-gray-900">\${parsedContent.title || 'Site'}</h3>
             <p className="mt-2 text-sm text-gray-600">
-              ${parsedContent.description || 'Building amazing experiences with TypeScript and React.'}
+              \${parsedContent.description || 'Building amazing experiences with TypeScript and React.'}
             </p>
           </div>
-          ${sectionsCode || `<div>
+          \${sectionsCode || \`<div>
             <h4 className="font-medium text-gray-900">Navigation</h4>
             <ul className="mt-4 space-y-2">
               <li><a href="#" className="text-sm text-gray-600 hover:text-primary-600">Home</a></li>
               <li><a href="#" className="text-sm text-gray-600 hover:text-primary-600">About</a></li>
             </ul>
-          </div>`}
+          </div>\`}
         </div>
         <div className="mt-8 border-t border-gray-200 pt-8 text-center">
           <p className="text-sm text-gray-600">
-            &copy; {currentYear} ${parsedContent.title || 'Site'}. All rights reserved.
+            &copy; {currentYear} \${parsedContent.title || 'Site'}. All rights reserved.
           </p>
         </div>
       </div>
@@ -3882,29 +3949,28 @@ function generateBundledSiteCss(parsedContent: ParsedContent): string {
 }
 
 function generateHomePageFromContent(parsedContent: ParsedContent): string {
-  // Check if we have the actual body HTML from the crawled site (primary: bodyContent, fallback: htmlContent)
-  const bodyContent = parsedContent.bodyContent || (parsedContent as any).htmlContent
+  // Check if we have modular sections (new AI-converted approach)
+  const sections = parsedContent.sections || []
 
-  if (bodyContent && bodyContent.trim().length > 100) {
-    // We use the raw HTML directly with dangerouslySetInnerHTML to maintain 100% accuracy.
-    // We escape backticks and dollar signs to prevent template literal issues in the generated code.
-    const escapedHtml = bodyContent
-      .replace(/\\/g, '\\\\')
-      .replace(/`/g, '\\`')
-      .replace(/\$\{/g, '\\${')
+  if (sections.length > 0) {
+    const sectionNames = sections.map((s, i) => s.heading?.replace(/[^a-zA-Z0-9]/g, '') || `Section${i + 1}`)
+    const imports = sectionNames.map(name => `import { ${name} } from '../components/sections/${name}'`).join('\n')
+    const components = sectionNames.map(name => `      <${name} />`).join('\n')
 
-    return `export default function Home() {
+    return `${imports}
+
+export default function Home() {
   return (
-    <div 
-      className="site-content"
-      dangerouslySetInnerHTML={{ 
-        __html: \`${escapedHtml}\` 
-      }} 
-    />
+    <main className="site-content">
+${components}
+    </main>
   )
 }
 `
   }
+
+  // Fallback to raw body content if no sections identified
+  const bodyContent = parsedContent.bodyContent || (parsedContent as any).htmlContent
 
   // Fallback to generated components if body content not available
   const sectionImports = (parsedContent.sections || [])

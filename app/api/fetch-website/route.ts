@@ -31,6 +31,8 @@ interface ParsedContent {
   htmlAttributes: Record<string, string>
   bodyAttributes: Record<string, string>
   crawledAssets: CrawlResult  // All fetched assets
+  headerHtml?: string
+  footerHtml?: string
 }
 
 interface NavItem {
@@ -468,6 +470,10 @@ function parseWebsiteContent(html: string, domain: string, crawledAssets: CrawlR
   // Extract color palette from CSS
   const colorPalette = extractColorsFromAssets(crawledAssets)
 
+  // Extract header and footer raw HTML for AI conversion
+  const headerHtml = $("header, nav").first().html() || ""
+  const footerHtml = $("footer").first().html() || ""
+
   // Extract sections
   const sections: ContentSection[] = []
   const sectionElements = $("section, [class*='section'], [class*='container'] > div, main > div, article")
@@ -533,11 +539,13 @@ function parseWebsiteContent(html: string, domain: string, crawledAssets: CrawlR
       ogImage,
       twitterCard,
     },
-    bodyContent,
-    headContent,
+    bodyContent: $("body").html() || "",
+    headContent: $("head").html() || "",
     htmlAttributes: (crawledAssets as any).metadata?.html_attributes || {},
     bodyAttributes: (crawledAssets as any).metadata?.body_attributes || {},
     crawledAssets,
+    headerHtml,
+    footerHtml,
   }
 }
 

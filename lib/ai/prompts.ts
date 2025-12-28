@@ -147,7 +147,8 @@ Guidelines:
 4. Tailwind Integration (Optional): If the project uses Tailwind, map common styles to Tailwind classes where beneficial, but prioritize custom CSS/Variables for pixel-perfect matches.
 5. Interactive Logic: If you detect buttons, forms, or links, implement standard React patterns (onClick, onSubmit, Link from react-router-dom).
 6. Accessibility: Ensure semantic HTML and proper ARIA attributes.
-7. TypeScript: Use strict typing for all props.
+7. ID/Class Preservation: **STRICTLY PRESERVE ALL ORIGINAL IDs AND CLASSES** (convert \`class\` to \`className\`). Do not change or remove selectors, as the site's external JS and CSS depend on them.
+8. TypeScript: Use strict typing for all props.
 
 Output ONLY a JSON object:
 {
