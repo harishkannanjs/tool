@@ -15,6 +15,7 @@ interface CrawlResult {
   jsFiles: { url: string; content: string }[]
   inlineStyles: string[]
   inlineScripts: string[]
+  rootVariables?: Record<string, string>
 }
 
 interface ParsedContent {
@@ -3763,9 +3764,6 @@ function convertCssToJsxStyle(cssString: string): string {
   return `{ ${jsxPairs.join(', ')} }`
 }
 
-/**
- * Generate the bundled site CSS from crawled assets
- */
 function generateBundledSiteCss(parsedContent: ParsedContent): string {
   const crawledAssets = parsedContent.crawledAssets
   if (!crawledAssets) {
@@ -3774,16 +3772,27 @@ function generateBundledSiteCss(parsedContent: ParsedContent): string {
 
   const parts: string[] = []
 
-  // Add CSS from external files
+  // 1. Add CSS Variables (Extracted from Python BeautifulSoup)
+  if (crawledAssets.rootVariables && Object.keys(crawledAssets.rootVariables).length > 0) {
+    parts.push('/* --- CSS Variables --- */')
+    parts.push(':root {')
+    for (const [key, value] of Object.entries(crawledAssets.rootVariables)) {
+      parts.push(`  ${key}: ${value};`)
+    }
+    parts.push('}')
+    parts.push('')
+  }
+
+  // 2. Add CSS from external files
   for (const cssFile of crawledAssets.cssFiles) {
-    parts.push(`/* Source: ${cssFile.url} */`)
+    parts.push(`/* --- External CSS: ${cssFile.url} --- */`)
     parts.push(cssFile.content)
     parts.push('')
   }
 
-  // Add inline styles
+  // 3. Add inline styles
   for (let i = 0; i < crawledAssets.inlineStyles.length; i++) {
-    parts.push(`/* Inline style block ${i + 1} */`)
+    parts.push(`/* --- Inline Style block ${i + 1} --- */`)
     parts.push(crawledAssets.inlineStyles[i])
     parts.push('')
   }

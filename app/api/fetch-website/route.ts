@@ -1,5 +1,7 @@
 import { type NextRequest, NextResponse } from "next/server"
 import * as cheerio from "cheerio"
+import { execSync } from "child_process"
+import path from "path"
 
 // ============ INTERFACES ============
 
@@ -9,6 +11,7 @@ interface CrawlResult {
   jsFiles: { url: string; content: string }[]
   inlineStyles: string[]
   inlineScripts: string[]
+  rootVariables?: Record<string, string>
 }
 
 interface ParsedContent {
@@ -162,11 +165,49 @@ export async function POST(request: NextRequest) {
 
 /**
  * Crawl and fetch all CSS and JS assets from the page
+ * Uses Python BeautifulSoup4 as primary method for CSS extraction, Node.js as fallback
  */
 async function crawlAndFetchAssets(html: string, domain: string): Promise<CrawlResult> {
-  const $ = cheerio.load(html)
-  const baseUrl = `https://${domain}`
+  const url = `https://${domain}`
 
+  // Try Python BeautifulSoup4 first (as requested)
+  try {
+    const pythonScriptPath = path.join(process.cwd(), "lib", "python", "fetch_css.py")
+    // Use python or python3 depending on system
+    const pythonCmd = process.platform === "win32" ? "python" : "python3"
+
+    console.log(`Executing Python CSS fetcher for ${url}...`)
+    const output = execSync(`${pythonCmd} "${pythonScriptPath}" "${url}"`, {
+      encoding: "utf-8",
+      maxBuffer: 10 * 1024 * 1024 // 10MB buffer
+    })
+
+    const result = JSON.parse(output)
+
+    if (result && !result.error) {
+      console.log("Python CSS fetcher success")
+
+      // Still need to fetch JS files using Node (we only moved CSS to Python for now)
+      const jsUrls = extractJsUrls(html, domain)
+      const jsFiles = await fetchAllFiles(jsUrls)
+
+      return {
+        html,
+        cssFiles: result.css_files || [],
+        jsFiles: jsFiles,
+        inlineStyles: result.inline_styles || [],
+        inlineScripts: extractInlineScripts(html),
+        rootVariables: result.root_variables || {}
+      }
+    } else if (result.error) {
+      console.warn("Python CSS fetcher error:", result.error)
+    }
+  } catch (pyError) {
+    console.warn("Python fetcher failed or not available, falling back to Node.js:", pyError instanceof Error ? pyError.message : String(pyError))
+  }
+
+  // Fallback to Node.js implementation
+  const $ = cheerio.load(html)
   const cssUrls = new Set<string>()
   const jsUrls = new Set<string>()
   const inlineStyles: string[] = []
@@ -177,7 +218,6 @@ async function crawlAndFetchAssets(html: string, domain: string): Promise<CrawlR
     const href = $(el).attr('href')
     if (href) {
       const fullUrl = normalizeUrl(href, domain)
-      // Only fetch from same domain or relative URLs
       if (fullUrl.includes(domain) || href.startsWith('/') || !href.startsWith('http')) {
         cssUrls.add(fullUrl)
       }
@@ -192,14 +232,12 @@ async function crawlAndFetchAssets(html: string, domain: string): Promise<CrawlR
     }
   })
 
-  // Collect JS file URLs (skip external analytics/chat scripts)
+  // Collect JS file URLs
   $('script[src]').each((_, el) => {
     const src = $(el).attr('src')
     if (src) {
-      // Skip external services
       const skipPatterns = ['googletagmanager', 'google-analytics', 'crisp', 'facebook', 'twitter', 'linkedin', 'hotjar', 'clarity']
       const shouldSkip = skipPatterns.some(pattern => src.toLowerCase().includes(pattern))
-
       if (!shouldSkip) {
         const fullUrl = normalizeUrl(src, domain)
         if (fullUrl.includes(domain) || src.startsWith('/') || !src.startsWith('http')) {
@@ -209,11 +247,10 @@ async function crawlAndFetchAssets(html: string, domain: string): Promise<CrawlR
     }
   })
 
-  // Collect inline scripts (non-analytics)
+  // Collect inline scripts
   $('script:not([src])').each((_, el) => {
     const content = $(el).html()
     if (content && content.trim()) {
-      // Skip if it looks like analytics
       const skipPatterns = ['gtag', 'dataLayer', 'fbq', '_gaq', 'analytics', 'crisp']
       const shouldSkip = skipPatterns.some(pattern => content.includes(pattern))
       if (!shouldSkip) {
@@ -222,19 +259,42 @@ async function crawlAndFetchAssets(html: string, domain: string): Promise<CrawlR
     }
   })
 
-  // Fetch all CSS files
   const cssFiles = await fetchAllFiles(Array.from(cssUrls))
-
-  // Fetch all JS files
   const jsFiles = await fetchAllFiles(Array.from(jsUrls))
 
-  return {
-    html,
-    cssFiles,
-    jsFiles,
-    inlineStyles,
-    inlineScripts,
-  }
+  return { html, cssFiles, jsFiles, inlineStyles, inlineScripts }
+}
+
+/** Helper to extract JS URLs for Python fallback mode */
+function extractJsUrls(html: string, domain: string): string[] {
+  const $ = cheerio.load(html)
+  const jsUrls = new Set<string>()
+  $('script[src]').each((_, el) => {
+    const src = $(el).attr('src')
+    if (src) {
+      const skipPatterns = ['googletagmanager', 'google-analytics', 'crisp', 'facebook', 'twitter', 'linkedin', 'hotjar', 'clarity']
+      if (!skipPatterns.some(pattern => src.toLowerCase().includes(pattern))) {
+        jsUrls.add(normalizeUrl(src, domain))
+      }
+    }
+  })
+  return Array.from(jsUrls)
+}
+
+/** Helper to extract inline scripts for Python fallback mode */
+function extractInlineScripts(html: string): string[] {
+  const $ = cheerio.load(html)
+  const scripts: string[] = []
+  $('script:not([src])').each((_, el) => {
+    const content = $(el).html()
+    if (content && content.trim()) {
+      const skipPatterns = ['gtag', 'dataLayer', 'fbq', '_gaq', 'analytics', 'crisp']
+      if (!skipPatterns.some(pattern => content.includes(pattern))) {
+        scripts.push(content)
+      }
+    }
+  })
+  return scripts
 }
 
 /**

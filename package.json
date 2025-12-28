@@ -6,7 +6,8 @@
     "build": "next build",
     "dev": "next dev",
     "lint": "eslint .",
-    "start": "next start"
+    "start": "next start",
+    "python-deps": "pip install -r requirements.txt"
   },
   "dependencies": {
     "cheerio": "^1.0.0-rc.12",
