@@ -267,59 +267,20 @@ export { Loader } from './Loader'
   addFile("src/components/layout/Layout.tsx", generateLayoutComponent())
   await delay(40)
 
-  for (let i = 0; i < (parsedContent.sections || []).length; i++) {
-    const section = parsedContent.sections[i]
-    const baseName = section.heading?.replace(/[^a-zA-Z0-9]/g, '') || `Section`
-    const sectionName = `${baseName}${i + 1}`
-    const fileName = `src/components/sections/${sectionName}.tsx`
+  // ============ SECTIONS ============
+  // We use a monolithic approach for sections to ensure 100% fidelity 
+  // and avoid naming collisions/import errors during deployment.
+  const sections = parsedContent.sections || []
+  onProgress?.([...fileNames, `Processing ${sections.length} sections...`])
+  await delay(20)
 
-    let componentCode = ""
+  // No longer generating individual files for sections to keep file count low 
+  // and avoid identifier collisions as requested.
 
-    // Attempt AI conversion if rawHtml is available
-    if (section.rawHtml && section.rawHtml.length > 50) {
-      try {
-        onProgress?.([...fileNames, `Converting ${sectionName} with AI...`])
-        const aiComponent = await convertHtmlToReactComponent(
-          section.rawHtml,
-          siteCssContent.substring(0, 5000) + "\n" + colorsContext, // Provide some CSS context
-          sectionName
-        )
-
-        if (aiComponent && aiComponent.code) {
-          componentCode = aiComponent.code
-          // Collect AI dependencies
-          if (aiComponent.dependencies) {
-            aiComponent.dependencies.forEach((dep: string) => {
-              allExtraDependencies[dep] = "latest"
-            })
-          }
-        }
-      } catch (error) {
-        console.warn(`AI conversion failed for ${sectionName}, falling back to template:`, error)
-      }
-    }
-
-    // Fallback to template if AI conversion failed or was skipped
-    if (!componentCode) {
-      componentCode = generateSectionComponentFromContent(section, sectionName, parsedContent.colors)
-    }
-
-    addFile(fileName, componentCode)
-    await delay(40)
-  }
-
-  // Generate sections index for easier imports
-  const sectionExports = (parsedContent.sections || [])
-    .map((s, i) => {
-      const baseName = s.heading?.replace(/[^a-zA-Z0-9]/g, '') || `Section`
-      const name = `${baseName}${i + 1}`
-      return `export { ${name} } from './${name}'`
-    })
-    .join('\n')
-
+  // Optional sections index (empty or minimal)
   addFile(
     "src/components/sections/index.ts",
-    sectionExports || "// Sections will be added here"
+    "// Sections are rendered directly in Home.tsx for maximum fidelity"
   )
   await delay(20)
 
@@ -3991,99 +3952,43 @@ function generateBundledSiteCss(parsedContent: ParsedContent): string {
 }
 
 function generateHomePageFromContent(parsedContent: ParsedContent): string {
-  // Check if we have modular sections (new AI-converted approach)
   const sections = parsedContent.sections || []
 
   if (sections.length > 0) {
-    const sectionNames = sections.map((s, i) => {
-      const baseName = s.heading?.replace(/[^a-zA-Z0-9]/g, '') || `Section`
-      return `${baseName}${i + 1}`
-    })
-    const imports = sectionNames.map(name => `import { ${name} } from '../components/sections/${name}'`).join('\n')
-    const components = sectionNames.map(name => `      <${name} />`).join('\n')
+    const sectionsHtml = sections.map((s, i) => {
+      const rawHtml = s.rawHtml || ("<div>" + s.content + "</div>")
+      const safeHtml = rawHtml.replace(/`/g, '\\`').replace(/\$/g, '\\$')
+      return (
+        "      {/* Section " + (i + 1) + " */}\n" +
+        "      <div\n" +
+        "        id=\"section-" + (i + 1) + "\"\n" +
+        "        dangerouslySetInnerHTML={{ __html: \`" + safeHtml + "\` }}\n" +
+        "      />"
+      )
+    }).join('\n')
 
-    return `${imports}
-
-export default function Home() {
-  return (
-    <main className="site-content">
-${components}
-    </main>
-  )
-}
-`
+    return (
+      "import React from 'react'\n\n" +
+      "export default function Home() {\n" +
+      "  return (\n" +
+      "    <main className=\"site-content\">\n" +
+      sectionsHtml + "\n" +
+      "    </main>\n" +
+      "  )\n" +
+      "}\n"
+    )
   }
 
-  // Fallback to raw body content if no sections identified
-  const bodyContent = parsedContent.bodyContent || (parsedContent as any).htmlContent
+  const bodyContent = parsedContent.bodyContent || (parsedContent as any).htmlContent || ""
+  const safeBody = bodyContent.replace(/`/g, '\\`').replace(/\$/g, '\\$')
 
-  // Fallback to generated components if body content not available
-  const sectionImports = (parsedContent.sections || [])
-    .map((_: any, i: number) => `Section${i + 1}`)
-    .map((name: string) => `  ${name},`)
-    .join('\n')
-
-  const sectionComponents = (parsedContent.sections || [])
-    .map((_: any, i: number) => `      <Section${i + 1} />`)
-    .join('\n')
-
-  const sectionsContent = sectionComponents ? sectionComponents : `      <section className="py-16 bg-gray-50">
-        <div className="container text-center">
-          <h2 className="text-2xl font-bold text-gray-900">Explore More</h2>
-          <p className="mt-4 text-gray-600">More content coming soon...</p>
-        </div>
-      </section>`
-
-  return `import { Link } from 'react-router-dom'
-import { ROUTES } from '@/constants/routes'
-import { Button } from '@/components/common'
-${sectionImports ? `import {\n${sectionImports}\n} from '@/components/sections'\n` : ''}
-
-export default function Home() {
   return (
-    <div className="flex flex-col">
-      {/* Hero Section */}
-      <section className="bg-gradient-to-b from-primary-50 to-white py-20">
-        <div className="container text-center">
-          <h1 className="text-4xl font-bold tracking-tight text-gray-900 sm:text-5xl md:text-6xl">
-            ${parsedContent.title || 'Welcome'}
-          </h1>
-          <p className="mx-auto mt-6 max-w-2xl text-lg text-gray-600">
-            ${parsedContent.description || 'A modern TypeScript + React application with everything you need.'}
-          </p>
-          <div className="mt-10 flex items-center justify-center gap-4">
-            <Link to={ROUTES.REGISTER}>
-              <Button size="lg">Get Started</Button>
-            </Link>
-            <Link to={ROUTES.ABOUT}>
-              <Button variant="outline" size="lg">
-                Learn More
-              </Button>
-            </Link>
-          </div>
-        </div>
-      </section>
-
-      {/* Dynamic Sections */}
-      ${sectionsContent}
-
-      {/* CTA Section */}
-      <section className="bg-primary-600 py-16">
-        <div className="container text-center">
-          <h2 className="text-3xl font-bold text-white">Ready to get started?</h2>
-          <p className="mt-4 text-lg text-primary-100">
-            Join thousands of users of our platform.
-          </p>
-          <Link to={ROUTES.REGISTER}>
-            <Button variant="secondary" size="lg" className="mt-8">
-              Create Free Account
-            </Button>
-          </Link>
-        </div>
-      </section>
-    </div>
+    "import React from 'react'\n\n" +
+    "export default function Home() {\n" +
+    "  return (\n" +
+    "    <main className=\"site-content\" dangerouslySetInnerHTML={{ __html: \`" + safeBody + "\` }} />\n" +
+    "  )\n" +
+    "}\n"
   )
-}
-`
 }
 
