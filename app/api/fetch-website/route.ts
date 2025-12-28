@@ -1,7 +1,8 @@
-import { type NextRequest, NextResponse } from "next/server"
+import { NextRequest, NextResponse } from "next/server"
 import * as cheerio from "cheerio"
 import { execSync } from "child_process"
 import path from "path"
+import { promises as fs } from "fs"
 
 // ============ INTERFACES ============
 
@@ -381,62 +382,57 @@ function parseWebsiteContent(html: string, domain: string, crawledAssets: CrawlR
   const title = $("title").text() || domain
   const description = $('meta[name="description"]').attr("content") || ""
   const favicon = $('link[rel="icon"]').attr("href") || $('link[rel="shortcut icon"]').attr("href") || null
-  const keywords = $('meta[name="keywords"]').attr("content")?.split(",").map(k => k.trim()) || []
+  const keywords = $('meta[name="keywords"]').attr("content")?.split(",").map((k: string) => k.trim()) || []
   const ogImage = $('meta[property="og:image"]').attr("content") || undefined
   const twitterCard = $('meta[name="twitter:card"]').attr("content") || undefined
   const charset = $('meta[charset]').attr("charset") || "utf-8"
   const language = $("html").attr("lang") || "en"
 
-  // Extract head content (for meta tags, etc.)
+  // Extract head and body content
   const headContent = $('head').html() || ''
-
-  // Extract body content - this is the main content we need
   const bodyContent = $('body').html() || ''
 
-  // Extract navigation
   const navItems: NavItem[] = []
-  $("header, nav").first().find("a").each((_: any, el: any) => {
+  const images: ExtractedImage[] = []
+  const formElements: FormElement[] = []
+
+  // Extract navigation
+  $("nav, header").first().find("a").each((_: number, el: any) => {
     const text = $(el).text().trim()
-    const href = $(el).attr("href") || "#"
-    if (text && text.length < 100 && !text.includes("\n")) {
-      navItems.push({ text, href: normalizeUrl(href, domain), ariaLabel: $(el).attr("aria-label") })
+    const href = $(el).attr("href")
+    if (text && href && text.length < 50) {
+      navItems.push({
+        text,
+        href: normalizeUrl(href, domain),
+        ariaLabel: $(el).attr("aria-label")
+      })
     }
   })
 
-  // Extract hero section
-  let hero: HeroSection | null = null
-  const heroEl = $("[class*='hero'], [class*='banner'], header, .jumbotron").first()
-  if (heroEl.length) {
-    const h1 = heroEl.find("h1").first().text().trim()
-    const subtitle = heroEl.find("h2, p").first().text().trim()
-    const ctaBtn = heroEl.find("a, button").first()
-    hero = {
-      title: h1 || title,
-      subtitle: subtitle || description,
-      ctaText: ctaBtn.text().trim() || "Learn More",
-      ctaLink: ctaBtn.attr("href") || "#",
-      backgroundImage: heroEl.css("background-image") || null,
-    }
+  // Hero section detection
+  let hero: HeroSection = {
+    title: $("h1").first().text().trim() || title,
+    subtitle: $("p").first().text().trim() || description,
+    ctaText: "Get Started",
+    ctaLink: "#",
+    backgroundImage: null,
   }
 
-  // Extract images with full URLs
-  const images: ExtractedImage[] = []
-  $("img").each((_, el) => {
-    const src = $(el).attr("src") || ""
-    const alt = $(el).attr("alt") || "Image"
-    if (src && !src.includes("data:")) {
+  // Extract images
+  $("img").each((_: number, el: any) => {
+    const src = $(el).attr("src")
+    if (src && !src.startsWith("data:")) {
       images.push({
         src: normalizeUrl(src, domain),
-        alt,
-        section: $(el).closest("section, div[class*='section']").attr("class") || "general"
+        alt: $(el).attr("alt") || "Image",
+        section: $(el).closest("section").attr("class") || "general"
       })
     }
   })
 
   // Extract form elements
-  const formElements: FormElement[] = []
-  $("input, textarea, select").each((_, el) => {
-    const type = $(el).attr("type") || "text"
+  $("input, select, textarea").each((_: number, el: any) => {
+    const type = $(el).attr("type") || (el as any).tagName?.toLowerCase() || "text"
     formElements.push({
       type,
       placeholder: $(el).attr("placeholder"),
@@ -446,85 +442,58 @@ function parseWebsiteContent(html: string, domain: string, crawledAssets: CrawlR
 
   // Extract footer links
   const footerLinks: FooterLink[] = []
-  $("footer").each((_, footer) => {
-    $(footer)
-      .find("div, section, ul")
-      .each((_, section) => {
-        const heading = $(section).find("h3, h4, strong").first().text().trim()
-        if (heading) {
-          const links: { text: string; href: string }[] = []
-          $(section)
-            .find("a")
-            .each((_, link) => {
-              const text = $(link).text().trim()
-              const href = $(link).attr("href") || "#"
-              if (text) links.push({ text, href: normalizeUrl(href, domain) })
-            })
-          if (links.length > 0) {
-            footerLinks.push({ section: heading, links })
-          }
+  $("footer").each((_: number, footer: any) => {
+    $(footer).find("div, ul, section").each((_: number, section: any) => {
+      const heading = $(section).find("h3, h4, strong").first().text().trim()
+      if (heading) {
+        const links: { text: string; href: string }[] = []
+        $(section).find("a").each((_: number, link: any) => {
+          const text = $(link).text().trim()
+          const href = $(link).attr("href") || "#"
+          if (text) links.push({ text, href: normalizeUrl(href, domain) })
+        })
+        if (links.length > 0) {
+          footerLinks.push({ section: heading, links })
         }
-      })
+      }
+    })
   })
 
-  // Extract color palette from CSS
-  const colorPalette = extractColorsFromAssets(crawledAssets)
-
-  // Extract header and footer raw HTML for AI conversion
+  // Extract layout raw HTML
   const headerHtml = $("header, nav").first().html() || ""
   const footerHtml = $("footer").first().html() || ""
 
-  // Extract sections
+  // Extract sections, excluding header/footer contents
   const sections: ContentSection[] = []
-  const sectionElements = $("section, [class*='section'], [class*='container'] > div, main > div, article")
-
-  let sectionCount = 0
-  sectionElements.each((index, el) => {
-    const heading = $(el).find("h2, h3, h1").first().text().trim()
-    const text = $(el).text().trim()
-
-    if (!text || text.length < 20) return
-
-    sectionCount++
-    const finalHeading = heading || `Section ${sectionCount}`
-
-    const section: ContentSection = {
-      id: `section-${index}`,
-      type: detectSectionType($(el)),
-      heading: finalHeading,
-      subheading: $(el).find("h3, h4, p").eq(1).text().trim(),
-      content: $(el).find("p").first().text().trim() || text.substring(0, 200),
-      rawHtml: $(el).html() || "",
-    }
-
-    const items: SectionItem[] = []
-    $(el)
-      .find("[class*='card'], [class*='item'], [class*='feature'], [class*='service'], li, [class*='box']")
-      .each((_: any, item: any) => {
-        const itemTitle = $(item).find("h3, h4, .title, strong, span[class*='title']").first().text().trim()
-        if (itemTitle && itemTitle.length > 2) {
-          items.push({
-            title: itemTitle,
-            description: $(item).find("p").first().text().trim(),
-            image: $(item).find("img").attr("src"),
-            link: $(item).find("a").attr("href"),
-          })
-        }
-      })
-
-    if (items.length > 0) {
-      section.items = items
-      section.columns = detectColumns($(el))
-    }
-
-    sections.push(section)
+  const sectionElements = $("section, article, main > div, [class*='section'], [class*='container'] > div").filter((_: number, el: any) => {
+    return $(el).closest("header, nav, footer").length === 0
   })
+
+  sectionElements.each((index: number, el: any) => {
+    const heading = $(el).find("h2, h3, h1").first().text().trim()
+    const sectionRawHtml = $(el).html() || ""
+
+    if (sectionRawHtml.length < 100) return
+
+    sections.push({
+      id: `section-\${index}`,
+      type: "content",
+      heading: heading || `Section \${index + 1}`,
+      subheading: "",
+      content: $(el).text().trim().substring(0, 500),
+      rawHtml: sectionRawHtml,
+      items: [],
+      columns: 1
+    })
+  })
+
+  const colorPalette = extractColorsFromAssets(crawledAssets)
 
   return {
     title,
     description,
     favicon: favicon ? normalizeUrl(favicon, domain) : null,
-    navItems: [...new Set(navItems.map(n => JSON.stringify(n)))].map(n => JSON.parse(n)).slice(0, 10),
+    navItems: navItems.slice(0, 10),
     hero,
     sections,
     footerLinks,
@@ -539,8 +508,8 @@ function parseWebsiteContent(html: string, domain: string, crawledAssets: CrawlR
       ogImage,
       twitterCard,
     },
-    bodyContent: $("body").html() || "",
-    headContent: $("head").html() || "",
+    bodyContent,
+    headContent,
     htmlAttributes: (crawledAssets as any).metadata?.html_attributes || {},
     bodyAttributes: (crawledAssets as any).metadata?.body_attributes || {},
     crawledAssets,

@@ -148,7 +148,9 @@ Guidelines:
 5. Interactive Logic: If you detect buttons, forms, or links, implement standard React patterns (onClick, onSubmit, Link from react-router-dom).
 6. Accessibility: Ensure semantic HTML and proper ARIA attributes.
 7. ID/Class Preservation: **STRICTLY PRESERVE ALL ORIGINAL IDs AND CLASSES** (convert \`class\` to \`className\`). Do not change or remove selectors, as the site's external JS and CSS depend on them.
-8. TypeScript: Use strict typing for all props.
+8. Asset Persistence: **USE THE EXACT IMAGE AND FONT URLS PROVIDED**. Do not use placeholders unless no URL is present.
+9. TypeScript: Use strict typing for all props.
+10. Dependencies: In your JSON output, list any libraries used (e.g., "lucide-react", "framer-motion").
 
 Output ONLY a JSON object:
 {

@@ -92,6 +92,7 @@ export async function generateCodebase(
   parsedContent.aiSuggestions = aiSuggestions
 
   // ============ CONFIG FILES ============
+  // Initial package.json will be updated at the end
   addFile("package.json", generatePackageJson(projectName))
   await delay(50)
 
@@ -129,6 +130,27 @@ export async function generateCodebase(
 
   addFile("README.md", generateReadme(projectName, domain, parsedContent))
   await delay(30)
+
+  // Move package.json generation to the end to include all collected dependencies
+  const finalizePackageJson = () => {
+    addFile("package.json", generatePackageJson(projectName, allExtraDependencies))
+  }
+
+  // Precompute CSS and colors for AI context
+  const siteCssContent = generateBundledSiteCss(parsedContent)
+  const colorsContext = JSON.stringify(parsedContent.colors)
+  const allExtraDependencies: Record<string, string> = {}
+
+  // ============ COMPONENTS - LAYOUT ============
+  const headerData = await generateHeaderComponentFromContent(parsedContent, siteCssContent, colorsContext)
+  addFile("src/components/layout/Header.tsx", headerData.code)
+  headerData.dependencies.forEach(dep => { allExtraDependencies[dep] = "latest" })
+  await delay(40)
+
+  const footerData = await generateFooterComponentFromContent(parsedContent, siteCssContent, colorsContext)
+  addFile("src/components/layout/Footer.tsx", footerData.code)
+  footerData.dependencies.forEach(dep => { allExtraDependencies[dep] = "latest" })
+  await delay(40)
 
   // ============ ENTRY FILES ============
   addFile("index.html", generateIndexHtml(parsedContent.title))
@@ -242,17 +264,6 @@ export { Loader } from './Loader'
   )
   await delay(20)
 
-  // Precompute CSS and colors for AI context
-  const siteCssContent = generateBundledSiteCss(parsedContent)
-  const colorsContext = JSON.stringify(parsedContent.colors)
-
-  // ============ COMPONENTS - LAYOUT ============
-  addFile("src/components/layout/Header.tsx", await generateHeaderComponentFromContent(parsedContent, siteCssContent, colorsContext))
-  await delay(40)
-
-  addFile("src/components/layout/Footer.tsx", await generateFooterComponentFromContent(parsedContent, siteCssContent, colorsContext))
-  await delay(40)
-
   addFile("src/components/layout/Layout.tsx", generateLayoutComponent())
   await delay(40)
 
@@ -275,6 +286,12 @@ export { Loader } from './Loader'
 
         if (aiComponent && aiComponent.code) {
           componentCode = aiComponent.code
+          // Collect AI dependencies
+          if (aiComponent.dependencies) {
+            aiComponent.dependencies.forEach((dep: string) => {
+              allExtraDependencies[dep] = "latest"
+            })
+          }
         }
       } catch (error) {
         console.warn(`AI conversion failed for ${sectionName}, falling back to template:`, error)
@@ -310,6 +327,9 @@ export { Loader } from './Loader'
 
   addFile("src/pages/NotFound.tsx", generateNotFoundPage())
   await delay(30)
+
+  // Finalize package.json after all components have been generated and dependencies collected
+  finalizePackageJson()
 
   // ============ VALIDATION STEP - AI ANALYSIS ============
   // ============ LAYER 1: ZOD VALIDATION & AUTO-FIX ============
@@ -376,7 +396,18 @@ export { Loader } from './Loader'
 
 // ============ GENERATOR FUNCTIONS ============
 
-function generatePackageJson(projectName: string): string {
+function generatePackageJson(projectName: string, extraDependencies: Record<string, string> = {}): string {
+  const baseDependencies = {
+    react: "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-router-dom": "^6.26.0",
+    axios: "^1.7.3",
+    clsx: "^2.1.1",
+    "tailwind-merge": "^2.4.0",
+    "lucide-react": "^0.424.0", // Common for AI components
+    ...extraDependencies,
+  }
+
   return JSON.stringify(
     {
       name: projectName,
@@ -391,14 +422,7 @@ function generatePackageJson(projectName: string): string {
         test: "vitest",
         "test:coverage": "vitest --coverage",
       },
-      dependencies: {
-        react: "^18.3.1",
-        "react-dom": "^18.3.1",
-        "react-router-dom": "^6.26.0",
-        axios: "^1.7.3",
-        clsx: "^2.1.1",
-        "tailwind-merge": "^2.4.0",
-      },
+      dependencies: baseDependencies,
       devDependencies: {
         "@types/react": "^18.3.3",
         "@types/react-dom": "^18.3.0",
@@ -440,8 +464,8 @@ function generateTsConfig(): string {
         noEmit: true,
         jsx: "react-jsx",
         strict: true,
-        noUnusedLocals: true,
-        noUnusedParameters: true,
+        noUnusedLocals: false, // Relaxed for AI-generated code
+        noUnusedParameters: false, // Relaxed for AI-generated code
         noFallthroughCasesInSwitch: true,
         baseUrl: ".",
         paths: {
@@ -722,13 +746,15 @@ function App() {
     // Apply html attributes
     const htmlAttrs = ${JSON.stringify(parsedContent.htmlAttributes || {})}
     Object.entries(htmlAttrs).forEach(([key, value]) => {
-      document.documentElement.setAttribute(key, value as string)
+      const attrValue = Array.isArray(value) ? value.join(' ') : value as string
+      document.documentElement.setAttribute(key, attrValue)
     })
 
     // Apply body attributes
     const bodyAttrs = ${JSON.stringify(parsedContent.bodyAttributes || {})}
     Object.entries(bodyAttrs).forEach(([key, value]) => {
-      document.body.setAttribute(key, value as string)
+      const attrValue = Array.isArray(value) ? value.join(' ') : value as string
+      document.body.setAttribute(key, attrValue)
     })
     
     // Cleanup if needed (though usually we want these to stay)
@@ -3626,7 +3652,7 @@ describe('useAuth', () => {
 
 // ============ DYNAMIC SECTION GENERATORS ============
 
-async function generateHeaderComponentFromContent(parsedContent: ParsedContent, siteCss: string, colors: string): Promise<string> {
+async function generateHeaderComponentFromContent(parsedContent: ParsedContent, siteCss: string, colors: string): Promise<{ code: string, dependencies: string[] }> {
   // Attempt AI conversion if headerHtml is available
   if (parsedContent.headerHtml && parsedContent.headerHtml.length > 50) {
     try {
@@ -3636,7 +3662,10 @@ async function generateHeaderComponentFromContent(parsedContent: ParsedContent, 
         "Header"
       )
       if (aiComponent && aiComponent.code) {
-        return aiComponent.code
+        return {
+          code: aiComponent.code,
+          dependencies: aiComponent.dependencies || []
+        }
       }
     } catch (error) {
       console.warn("AI Header conversion failed, fallback to template:", error)
@@ -3653,7 +3682,8 @@ async function generateHeaderComponentFromContent(parsedContent: ParsedContent, 
     )
     .join('\n')
 
-  return `import { Link, NavLink } from 'react-router-dom'
+  return {
+    code: `import { Link, NavLink } from 'react-router-dom'
 import { useAuth } from '@/hooks/useAuth'
 import { ROUTES } from '@/constants/routes'
 import { Button } from '@/components/common'
@@ -3704,10 +3734,12 @@ export function Header() {
     </header>
   )
 }
-`
+`,
+    dependencies: ['react-router-dom', 'lucide-react']
+  }
 }
 
-async function generateFooterComponentFromContent(parsedContent: ParsedContent, siteCss: string, colors: string): Promise<string> {
+async function generateFooterComponentFromContent(parsedContent: ParsedContent, siteCss: string, colors: string): Promise<{ code: string, dependencies: string[] }> {
   // Attempt AI conversion if footerHtml is available
   if (parsedContent.footerHtml && parsedContent.footerHtml.length > 50) {
     try {
@@ -3717,7 +3749,10 @@ async function generateFooterComponentFromContent(parsedContent: ParsedContent, 
         "Footer"
       )
       if (aiComponent && aiComponent.code) {
-        return aiComponent.code
+        return {
+          code: aiComponent.code,
+          dependencies: aiComponent.dependencies || []
+        }
       }
     } catch (error) {
       console.warn("AI Footer conversion failed, fallback to template:", error)
@@ -3743,7 +3778,8 @@ async function generateFooterComponentFromContent(parsedContent: ParsedContent, 
     )
     .join('\n')
 
-  return `export function Footer() {
+  return {
+    code: `export function Footer() {
   const currentYear = new Date().getFullYear()
 
   return (
@@ -3773,7 +3809,9 @@ async function generateFooterComponentFromContent(parsedContent: ParsedContent, 
     </footer>
   )
 }
-`
+`,
+    dependencies: []
+  }
 }
 
 function generateSectionComponentFromContent(section: any, index: number, colors: any): string {
