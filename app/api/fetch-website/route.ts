@@ -28,6 +28,8 @@ interface ParsedContent {
   metadata: PageMetadata
   bodyContent: string  // The actual body HTML content
   headContent: string  // The head content (meta tags, etc.)
+  htmlAttributes: Record<string, string>
+  bodyAttributes: Record<string, string>
   crawledAssets: CrawlResult  // All fetched assets
 }
 
@@ -92,6 +94,7 @@ interface PageMetadata {
   language: string
   charset: string
   keywords: string[]
+  url?: string
   ogImage?: string
   twitterCard?: string
 }
@@ -545,11 +548,14 @@ function parseWebsiteContent(html: string, domain: string, crawledAssets: CrawlR
       language,
       charset,
       keywords,
+      url: `https://${domain}`,
       ogImage,
       twitterCard,
     },
     bodyContent,
     headContent,
+    htmlAttributes: $("html").attr() || {},
+    bodyAttributes: $("body").attr() || {},
     crawledAssets,
   }
 }

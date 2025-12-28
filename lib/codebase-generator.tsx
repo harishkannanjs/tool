@@ -28,12 +28,21 @@ interface ParsedContent {
   footerLinks: any[]
   images: any[]
   formElements: any[]
-  colors: { primary: string; secondary: string; accent: string; background: string; text: string }
-  metadata: any
   aiSuggestions?: AIAnalysisResult
-  bodyContent?: string  // The actual body HTML from the crawled site
-  headContent?: string  // The head content (meta tags, etc.)
-  crawledAssets?: CrawlResult  // All fetched CSS/JS assets
+  colors: { primary: string; secondary: string; accent: string; background: string; text: string }
+  metadata: {
+    language: string
+    charset: string
+    keywords: string[]
+    url?: string
+    ogImage?: string
+    twitterCard?: string
+  }
+  bodyContent: string
+  headContent: string
+  htmlAttributes: Record<string, string>
+  bodyAttributes: Record<string, string>
+  crawledAssets: CrawlResult
 }
 
 export async function generateCodebase(
@@ -176,6 +185,10 @@ export async function generateCodebase(
 
   // Add the bundled site CSS from crawled assets
   addFile("src/styles/site.css", generateBundledSiteCss(parsedContent))
+  await delay(30)
+
+  // Add the bundled site JS from crawled assets
+  addFile("src/scripts/site.js", generateBundledSiteJs(parsedContent))
   await delay(30)
 
   // ============ CONTEXT ============
@@ -644,6 +657,14 @@ import App from './App'
 import './styles/globals.css'
 import './styles/site.css'  // Bundled CSS from the original site
 
+// Try to load the bundled JS after a short delay to ensure DOM is ready
+setTimeout(() => {
+  const script = document.createElement('script')
+  script.src = '/src/scripts/site.js'
+  script.defer = true
+  document.body.appendChild(script)
+}, 100)
+
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
     <App />
@@ -654,32 +675,58 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
 
 
 function generateAppTsx(parsedContent: ParsedContent): string {
-  // If we have crawled body content, render it directly without the complex layout
-  if (parsedContent.bodyContent && parsedContent.bodyContent.trim().length > 100) {
-    return `import Home from './pages/Home'
+  const hasCrawledContent = !!(parsedContent.bodyContent || (parsedContent as any).htmlContent)
 
-function App() {
-  return <Home />
-}
-
-export default App
-`
-  }
-
-  // Fallback to layout-based rendering
-  return `import { Layout } from './components/layout/Layout'
+  if (hasCrawledContent) {
+    return `import React, { useEffect } from 'react'
 import Home from './pages/Home'
 
 function App() {
+  useEffect(() => {
+    // Apply html attributes
+    const htmlAttrs = ${JSON.stringify(parsedContent.htmlAttributes || {})}
+    Object.entries(htmlAttrs).forEach(([key, value]) => {
+      document.documentElement.setAttribute(key, value as string)
+    })
+
+    // Apply body attributes
+    const bodyAttrs = ${JSON.stringify(parsedContent.bodyAttributes || {})}
+    Object.entries(bodyAttrs).forEach(([key, value]) => {
+      document.body.setAttribute(key, value as string)
+    })
+    
+    // Cleanup if needed (though usually we want these to stay)
+    return () => {
+      Object.keys(htmlAttrs).forEach(key => document.documentElement.removeAttribute(key))
+      Object.keys(bodyAttrs).forEach(key => document.body.removeAttribute(key))
+    }
+  }, [])
+
+  return <Home />
+}
+
+export default App`
+  }
+
+  return `import React from 'react'
+import { BrowserRouter as Router, Routes, Route } from 'react-router-dom'
+import Home from './pages/Home'
+// Layout is omitted for crawled content but kept for generated content
+import Layout from './components/layout/Layout'
+
+function App() {
   return (
-    <Layout>
-      <Home />
-    </Layout>
+    <Router>
+      <Layout>
+        <Routes>
+          <Route path="/" element={<Home />} />
+        </Routes>
+      </Layout>
+    </Router>
   )
 }
 
-export default App
-`
+export default App`
 }
 
 
@@ -3764,6 +3811,40 @@ function convertCssToJsxStyle(cssString: string): string {
   return `{ ${jsxPairs.join(', ')} }`
 }
 
+/**
+ * Bundles all crawled JavaScript files into a single file
+ */
+function generateBundledSiteJs(parsedContent: ParsedContent): string {
+  if (!parsedContent.crawledAssets?.jsFiles && !parsedContent.crawledAssets?.inlineScripts) {
+    return '// No site JavaScript found'
+  }
+
+  let bundledJs = `/* 
+  * Bundled JavaScript from ${parsedContent.metadata.url || 'crawled site'}
+  * This file contains all external and inline scripts to maintain site functionality.
+  */\n\n`
+
+  // 1. External scripts content
+  if (parsedContent.crawledAssets.jsFiles) {
+    parsedContent.crawledAssets.jsFiles.forEach((js) => {
+      bundledJs += `// --- START: ${js.url} ---\n`
+      bundledJs += js.content + '\n'
+      bundledJs += `// --- END: ${js.url} ---\n\n`
+    })
+  }
+
+  // 2. Inline scripts
+  if (parsedContent.crawledAssets.inlineScripts) {
+    parsedContent.crawledAssets.inlineScripts.forEach((script, index) => {
+      bundledJs += `// --- START: Inline Script ${index + 1} ---\n`
+      bundledJs += script + '\n'
+      bundledJs += `// --- END: Inline Script ${index + 1} ---\n\n`
+    })
+  }
+
+  return bundledJs
+}
+
 function generateBundledSiteCss(parsedContent: ParsedContent): string {
   const crawledAssets = parsedContent.crawledAssets
   if (!crawledAssets) {
@@ -3801,19 +3882,25 @@ function generateBundledSiteCss(parsedContent: ParsedContent): string {
 }
 
 function generateHomePageFromContent(parsedContent: ParsedContent): string {
-  // Check if we have the actual body HTML from the crawled site
-  const bodyContent = parsedContent.bodyContent
+  // Check if we have the actual body HTML from the crawled site (primary: bodyContent, fallback: htmlContent)
+  const bodyContent = parsedContent.bodyContent || (parsedContent as any).htmlContent
 
   if (bodyContent && bodyContent.trim().length > 100) {
-    // Convert HTML to JSX and use it directly
-    const jsxContent = convertHtmlToJsx(bodyContent)
+    // We use the raw HTML directly with dangerouslySetInnerHTML to maintain 100% accuracy.
+    // We escape backticks and dollar signs to prevent template literal issues in the generated code.
+    const escapedHtml = bodyContent
+      .replace(/\\/g, '\\\\')
+      .replace(/`/g, '\\`')
+      .replace(/\$\{/g, '\\${')
 
-    return `export default function Home() {
+    return `import React from 'react'
+
+export default function Home() {
   return (
     <div 
       className="site-content"
       dangerouslySetInnerHTML={{ 
-        __html: \`${jsxContent.replace(/`/g, '\\`').replace(/\$/g, '\\$')}\` 
+        __html: \`${escapedHtml}\` 
       }} 
     />
   )
