@@ -127,10 +127,10 @@ export async function POST(request: NextRequest) {
       }
 
       const html = await response.text()
-      
+
       // Step 2: Crawl and fetch all CSS/JS assets
       const crawledAssets = await crawlAndFetchAssets(html, domain)
-      
+
       // Step 3: Parse the website content
       const parsedContent = parseWebsiteContent(html, domain, crawledAssets)
 
@@ -166,12 +166,12 @@ export async function POST(request: NextRequest) {
 async function crawlAndFetchAssets(html: string, domain: string): Promise<CrawlResult> {
   const $ = cheerio.load(html)
   const baseUrl = `https://${domain}`
-  
+
   const cssUrls = new Set<string>()
   const jsUrls = new Set<string>()
   const inlineStyles: string[] = []
   const inlineScripts: string[] = []
-  
+
   // Collect CSS file URLs
   $('link[rel="stylesheet"]').each((_, el) => {
     const href = $(el).attr('href')
@@ -183,7 +183,7 @@ async function crawlAndFetchAssets(html: string, domain: string): Promise<CrawlR
       }
     }
   })
-  
+
   // Collect inline styles
   $('style').each((_, el) => {
     const content = $(el).html()
@@ -191,7 +191,7 @@ async function crawlAndFetchAssets(html: string, domain: string): Promise<CrawlR
       inlineStyles.push(content)
     }
   })
-  
+
   // Collect JS file URLs (skip external analytics/chat scripts)
   $('script[src]').each((_, el) => {
     const src = $(el).attr('src')
@@ -199,7 +199,7 @@ async function crawlAndFetchAssets(html: string, domain: string): Promise<CrawlR
       // Skip external services
       const skipPatterns = ['googletagmanager', 'google-analytics', 'crisp', 'facebook', 'twitter', 'linkedin', 'hotjar', 'clarity']
       const shouldSkip = skipPatterns.some(pattern => src.toLowerCase().includes(pattern))
-      
+
       if (!shouldSkip) {
         const fullUrl = normalizeUrl(src, domain)
         if (fullUrl.includes(domain) || src.startsWith('/') || !src.startsWith('http')) {
@@ -208,7 +208,7 @@ async function crawlAndFetchAssets(html: string, domain: string): Promise<CrawlR
       }
     }
   })
-  
+
   // Collect inline scripts (non-analytics)
   $('script:not([src])').each((_, el) => {
     const content = $(el).html()
@@ -221,13 +221,13 @@ async function crawlAndFetchAssets(html: string, domain: string): Promise<CrawlR
       }
     }
   })
-  
+
   // Fetch all CSS files
   const cssFiles = await fetchAllFiles(Array.from(cssUrls))
-  
+
   // Fetch all JS files
   const jsFiles = await fetchAllFiles(Array.from(jsUrls))
-  
+
   return {
     html,
     cssFiles,
@@ -239,6 +239,7 @@ async function crawlAndFetchAssets(html: string, domain: string): Promise<CrawlR
 
 /**
  * Fetch multiple files in parallel with error handling
+ * For CSS files, rewrites relative URLs to absolute URLs
  */
 async function fetchAllFiles(urls: string[]): Promise<{ url: string; content: string }[]> {
   const results = await Promise.allSettled(
@@ -250,7 +251,13 @@ async function fetchAllFiles(urls: string[]): Promise<{ url: string; content: st
           },
         })
         if (response.ok) {
-          const content = await response.text()
+          let content = await response.text()
+
+          // If it's a CSS file, rewrite relative URLs to absolute
+          if (url.includes('.css') || url.includes('stylesheet')) {
+            content = rewriteCssUrls(content, url)
+          }
+
           return { url, content }
         }
         return { url, content: "" }
@@ -259,12 +266,66 @@ async function fetchAllFiles(urls: string[]): Promise<{ url: string; content: st
       }
     })
   )
-  
+
   return results
     .filter((r): r is PromiseFulfilledResult<{ url: string; content: string }> => r.status === "fulfilled")
     .map(r => r.value)
     .filter(r => r.content.length > 0)
 }
+
+/**
+ * Rewrite relative URLs in CSS to absolute URLs
+ * Handles url(), @import, etc.
+ */
+function rewriteCssUrls(cssContent: string, cssFileUrl: string): string {
+  // Extract base URL from the CSS file URL
+  const urlParts = new URL(cssFileUrl)
+  const baseUrl = `${urlParts.protocol}//${urlParts.host}`
+  const basePath = cssFileUrl.substring(0, cssFileUrl.lastIndexOf('/') + 1)
+
+  // Replace url() references
+  let result = cssContent.replace(/url\(['"]?([^'"\)]+)['"]?\)/gi, (match, urlPath) => {
+    // Skip data URIs, absolute URLs, and CSS variables
+    if (urlPath.startsWith('data:') ||
+      urlPath.startsWith('http://') ||
+      urlPath.startsWith('https://') ||
+      urlPath.startsWith('var(') ||
+      urlPath.startsWith('#')) {
+      return match
+    }
+
+    let absoluteUrl: string
+    if (urlPath.startsWith('//')) {
+      absoluteUrl = 'https:' + urlPath
+    } else if (urlPath.startsWith('/')) {
+      absoluteUrl = baseUrl + urlPath
+    } else {
+      // Relative URL - resolve from CSS file location
+      absoluteUrl = basePath + urlPath
+    }
+
+    return `url('${absoluteUrl}')`
+  })
+
+  // Replace @import references
+  result = result.replace(/@import\s+['"]([^'"]+)['"];?/gi, (match, importPath) => {
+    if (importPath.startsWith('http://') || importPath.startsWith('https://')) {
+      return match
+    }
+
+    let absoluteUrl: string
+    if (importPath.startsWith('/')) {
+      absoluteUrl = baseUrl + importPath
+    } else {
+      absoluteUrl = basePath + importPath
+    }
+
+    return `@import '${absoluteUrl}';`
+  })
+
+  return result
+}
+
 
 // ============ PARSING FUNCTIONS ============
 
@@ -283,7 +344,7 @@ function parseWebsiteContent(html: string, domain: string, crawledAssets: CrawlR
 
   // Extract head content (for meta tags, etc.)
   const headContent = $('head').html() || ''
-  
+
   // Extract body content - this is the main content we need
   const bodyContent = $('body').html() || ''
 
@@ -319,10 +380,10 @@ function parseWebsiteContent(html: string, domain: string, crawledAssets: CrawlR
     const src = $(el).attr("src") || ""
     const alt = $(el).attr("alt") || "Image"
     if (src && !src.includes("data:")) {
-      images.push({ 
-        src: normalizeUrl(src, domain), 
-        alt, 
-        section: $(el).closest("section, div[class*='section']").attr("class") || "general" 
+      images.push({
+        src: normalizeUrl(src, domain),
+        alt,
+        section: $(el).closest("section, div[class*='section']").attr("class") || "general"
       })
     }
   })
@@ -367,17 +428,17 @@ function parseWebsiteContent(html: string, domain: string, crawledAssets: CrawlR
   // Extract sections
   const sections: ContentSection[] = []
   const sectionElements = $("section, [class*='section'], [class*='container'] > div, main > div, article")
-  
+
   let sectionCount = 0
   sectionElements.each((index, el) => {
     const heading = $(el).find("h2, h3, h1").first().text().trim()
     const text = $(el).text().trim()
-    
+
     if (!text || text.length < 20) return
-    
+
     sectionCount++
     const finalHeading = heading || `Section ${sectionCount}`
-    
+
     const section: ContentSection = {
       id: `section-${index}`,
       type: detectSectionType($(el)),
@@ -445,30 +506,30 @@ function normalizeUrl(url: string, domain: string): string {
 }
 
 function extractColorsFromAssets(crawledAssets: CrawlResult): ColorPalette {
-  const colors = { 
-    primary: "#3b82f6", 
-    secondary: "#1e40af", 
-    accent: "#60a5fa", 
-    background: "#ffffff", 
-    text: "#1f2937" 
+  const colors = {
+    primary: "#3b82f6",
+    secondary: "#1e40af",
+    accent: "#60a5fa",
+    background: "#ffffff",
+    text: "#1f2937"
   }
-  
+
   // Combine all CSS content
   const allCss = [
     ...crawledAssets.cssFiles.map(f => f.content),
     ...crawledAssets.inlineStyles
   ].join("\n")
-  
+
   // Try to extract primary color from CSS variables or common patterns
   const primaryMatch = allCss.match(/--primary[^:]*:\s*([#\w(),.]+)/i)
   if (primaryMatch) colors.primary = primaryMatch[1].trim()
-  
+
   const secondaryMatch = allCss.match(/--secondary[^:]*:\s*([#\w(),.]+)/i)
   if (secondaryMatch) colors.secondary = secondaryMatch[1].trim()
-  
+
   const accentMatch = allCss.match(/--accent[^:]*:\s*([#\w(),.]+)/i)
   if (accentMatch) colors.accent = accentMatch[1].trim()
-  
+
   return colors
 }
 
