@@ -269,7 +269,8 @@ export { Loader } from './Loader'
 
   for (let i = 0; i < (parsedContent.sections || []).length; i++) {
     const section = parsedContent.sections[i]
-    const sectionName = section.heading?.replace(/[^a-zA-Z0-9]/g, '') || `Section${i + 1}`
+    const baseName = section.heading?.replace(/[^a-zA-Z0-9]/g, '') || `Section`
+    const sectionName = `${baseName}${i + 1}`
     const fileName = `src/components/sections/${sectionName}.tsx`
 
     let componentCode = ""
@@ -300,7 +301,7 @@ export { Loader } from './Loader'
 
     // Fallback to template if AI conversion failed or was skipped
     if (!componentCode) {
-      componentCode = generateSectionComponentFromContent(section, i + 1, parsedContent.colors)
+      componentCode = generateSectionComponentFromContent(section, sectionName, parsedContent.colors)
     }
 
     addFile(fileName, componentCode)
@@ -310,7 +311,8 @@ export { Loader } from './Loader'
   // Generate sections index for easier imports
   const sectionExports = (parsedContent.sections || [])
     .map((s, i) => {
-      const name = s.heading?.replace(/[^a-zA-Z0-9]/g, '') || `Section${i + 1}`
+      const baseName = s.heading?.replace(/[^a-zA-Z0-9]/g, '') || `Section`
+      const name = `${baseName}${i + 1}`
       return `export { ${name} } from './${name}'`
     })
     .join('\n')
@@ -3703,10 +3705,10 @@ export function Header() {
       <div className="container flex h-16 items-center justify-between">
         <div className="flex items-center gap-8">
           <Link to={ROUTES.HOME} className="text-xl font-bold text-gray-900">
-            \${parsedContent.title || 'Site'}
+            ${parsedContent.title || 'Site'}
           </Link>
           <nav className="hidden md:flex items-center gap-6">
-            \${navItemsCode || '<NavLink to={ROUTES.HOME} className={navLinkClass}>Home</NavLink>'}
+            ${navItemsCode || `<NavLink to={ROUTES.HOME} className={navLinkClass}>Home</NavLink>`}
           </nav>
         </div>
         <div className="flex items-center gap-4">
@@ -3735,7 +3737,7 @@ export function Header() {
   )
 }
 `,
-    dependencies: ['react-router-dom', 'lucide-react']
+    dependencies: ['react-router-dom', 'lucide-react', 'clsx', 'tailwind-merge']
   }
 }
 
@@ -3779,7 +3781,9 @@ async function generateFooterComponentFromContent(parsedContent: ParsedContent, 
     .join('\n')
 
   return {
-    code: `export function Footer() {
+    code: `import { Link } from 'react-router-dom'
+
+export function Footer() {
   const currentYear = new Date().getFullYear()
 
   return (
@@ -3787,22 +3791,22 @@ async function generateFooterComponentFromContent(parsedContent: ParsedContent, 
       <div className="container py-12">
         <div className="grid grid-cols-1 gap-8 md:grid-cols-4">
           <div>
-            <h3 className="text-lg font-semibold text-gray-900">\${parsedContent.title || 'Site'}</h3>
+            <h3 className="text-lg font-semibold text-gray-900">${parsedContent.title || 'Site'}</h3>
             <p className="mt-2 text-sm text-gray-600">
-              \${parsedContent.description || 'Building amazing experiences with TypeScript and React.'}
+              ${parsedContent.description || 'Building amazing experiences with TypeScript and React.'}
             </p>
           </div>
-          \${sectionsCode || \`<div>
+          ${sectionsCode || `<div>
             <h4 className="font-medium text-gray-900">Navigation</h4>
             <ul className="mt-4 space-y-2">
               <li><a href="#" className="text-sm text-gray-600 hover:text-primary-600">Home</a></li>
               <li><a href="#" className="text-sm text-gray-600 hover:text-primary-600">About</a></li>
             </ul>
-          </div>\`}
+          </div>`}
         </div>
         <div className="mt-8 border-t border-gray-200 pt-8 text-center">
           <p className="text-sm text-gray-600">
-            &copy; {currentYear} \${parsedContent.title || 'Site'}. All rights reserved.
+            &copy; {currentYear} ${parsedContent.title || 'Site'}. All rights reserved.
           </p>
         </div>
       </div>
@@ -3810,18 +3814,18 @@ async function generateFooterComponentFromContent(parsedContent: ParsedContent, 
   )
 }
 `,
-    dependencies: []
+    dependencies: ['react-router-dom']
   }
 }
 
-function generateSectionComponentFromContent(section: any, index: number, colors: any): string {
+function generateSectionComponentFromContent(section: any, sectionName: string, colors: any): string {
   const items = section.items || []
 
   // Generate items code, but handle empty items gracefully
   const itemsCode = items.length > 0
     ? items
       .map(
-        (item, i) =>
+        (item: any, i: number) =>
           `    <div key="${i}" className="rounded-lg border border-gray-200 p-6 hover:shadow-md transition-shadow">
       ${item.image ? `<img src="${item.image}" alt="${item.title}" className="mb-4 h-48 w-full object-cover rounded" />` : ''}
       <h3 className="font-semibold text-gray-900">${item.title || 'Item'}</h3>
@@ -3836,12 +3840,12 @@ function generateSectionComponentFromContent(section: any, index: number, colors
   const columns = section.columns || 3
   const maxColumns = Math.min(columns, items.length || 3)
 
-  return `export function Section${index}() {
+  return `export function ${sectionName}() {
   return (
     <section className="py-16 bg-gray-50">
       <div className="container">
         <div className="mb-12 text-center">
-          <h2 className="text-3xl font-bold text-gray-900">${section.heading || `Section ${index}`}</h2>
+          <h2 className="text-3xl font-bold text-gray-900">${section.heading || 'Section'}</h2>
           ${section.content ? `<p className="mt-4 text-lg text-gray-600">${section.content}</p>` : ''}
         </div>
         ${items.length > 0 ? `<div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-${maxColumns}">
@@ -3991,7 +3995,10 @@ function generateHomePageFromContent(parsedContent: ParsedContent): string {
   const sections = parsedContent.sections || []
 
   if (sections.length > 0) {
-    const sectionNames = sections.map((s, i) => s.heading?.replace(/[^a-zA-Z0-9]/g, '') || `Section${i + 1}`)
+    const sectionNames = sections.map((s, i) => {
+      const baseName = s.heading?.replace(/[^a-zA-Z0-9]/g, '') || `Section`
+      return `${baseName}${i + 1}`
+    })
     const imports = sectionNames.map(name => `import { ${name} } from '../components/sections/${name}'`).join('\n')
     const components = sectionNames.map(name => `      <${name} />`).join('\n')
 
